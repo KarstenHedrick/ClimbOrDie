@@ -1,0 +1,543 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+local UIService = require(script.Parent:WaitForChild("UIService"))
+local TimerZoneService = require(script.Parent:WaitForChild("TimerZoneService"))
+
+local SetTransparencyEvent = ReplicatedStorage:WaitForChild("SetPlayerTransparencyEvent")
+local CheckpointReachedEvent = ReplicatedStorage:WaitForChild("CheckpointReachedEvent")
+
+local MapLoaderService = {}
+local hasUpgrade
+
+function MapLoaderService.Init(dependencies)
+	hasUpgrade = dependencies.hasUpgrade
+end
+
+local function isPlayerTouching(player, hit)
+	if not player.Character then return false end
+	local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+	return hrp and (hit:IsDescendantOf(player.Character) or hit == hrp)
+end
+
+local function broadcastCountdown(seconds)
+	local context = GameStateService.GetContext()
+
+	-- Still track server-side end time for gas logic (server needs this)
+	local now = GameStateService.GetCurrentTime()
+	context.gasStartTime = now + seconds
+	GameStateService.SetGasStartTime(context.gasStartTime)
+
+	print("Broadcasting countdown duration:", seconds, "seconds. Gas will start at server time:", context.gasStartTime)
+
+	local countdownEvent = ReplicatedStorage:FindFirstChild("GasCountdownBroadcastEvent")
+	if not countdownEvent then
+		countdownEvent = Instance.new("RemoteEvent")
+		countdownEvent.Name = "GasCountdownBroadcastEvent"
+		countdownEvent.Parent = ReplicatedStorage
+	end
+
+	-- Send duration instead of end time - this eliminates clock sync issues
+	-- Send to ALL players (both in-game and in lobby) so everyone can see the gas countdown
+	for _, player in ipairs(Players:GetPlayers()) do
+		countdownEvent:FireClient(player, seconds) -- Just send the duration!
+	end
+end
+
+local function teleportToSafePosition(player, fallbackPos)
+	local character = player.Character
+	if not character then return false end
+
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+
+	local checkpoint = player:GetAttribute("LastCheckpointPosition")
+	local pos = checkpoint or (fallbackPos + Vector3.new(0, 5, 0))
+
+	-- Safer teleportation
+	pcall(function()
+		hrp.CFrame = CFrame.new(pos)
+	end)
+
+	return true
+end
+
+local function setupEarlyGasProtection(gas, spawnPart)
+	if not gas or not spawnPart then
+		warn("setupEarlyGasProtection: Missing gas or spawn part")
+		return
+	end
+
+	local context = GameStateService.GetContext()
+	local cooldown = {}
+
+	local connection = gas.Touched:Connect(function(hit)
+		local player = Players:GetPlayerFromCharacter(hit.Parent)
+		if not player then return end
+
+		-- Get current game context
+		local context = GameStateService.GetContext()
+		local gasStartTime = context.gasStartTime
+		local currentTime = GameStateService.GetCurrentTime()
+		local isGameActive = GameStateService.IsGameInProgress()
+		local isPlayerInGame = context.readyPlayers and context.readyPlayers[player]
+		local isPlayerAlive = GameStateService.IsPlayerAlive(player)
+
+		-- Determine if this player should be affected by early gas protection
+		local shouldApplyProtection = false
+
+		if not isGameActive then
+			-- No game active - always apply protection
+			shouldApplyProtection = true
+		elseif isGameActive and gasStartTime and currentTime < gasStartTime then
+			-- Game is active but gas hasn't started rising yet - apply protection
+			shouldApplyProtection = true
+		elseif isGameActive and (not isPlayerInGame or not isPlayerAlive) then
+			-- Game is active but player is in lobby (not playing) - apply protection
+			-- This ensures lobby players are always affected by lobby gas
+			shouldApplyProtection = true
+		end
+
+		if shouldApplyProtection then
+			local now = tick()
+			if cooldown[player] and now - cooldown[player] < 2 then return end
+			cooldown[player] = now
+
+			print("Early gas protection triggered for player:", player.Name, "- Game active:", isGameActive, "Player in game:", isPlayerInGame, "Player alive:", isPlayerAlive)
+			teleportToSafePosition(player, spawnPart.Position)
+		else
+			-- Game is active, gas is rising, and player is actively playing
+			-- Let the main gas system handle it
+			print("Early gas protection skipped for active player:", player.Name, "- Gas system will handle")
+		end
+	end)
+
+	-- Store connection for cleanup
+	GameStateService.AddMapConnection("earlyGasProtection", connection)
+
+	context.disconnectEarlyGasTouch = function()
+		if connection then
+			connection:Disconnect()
+			connection = nil
+		end
+	end
+end
+
+local function setupCheckpointTracking(player, map)
+	if not player or not map then return end
+
+	local touched = {}
+	local folder = map:FindFirstChild("Checkpoints")
+	if not folder then 
+		warn("No Checkpoints folder found in map")
+		return 
+	end
+
+	for _, checkpoint in pairs(folder:GetChildren()) do
+		local part = checkpoint:FindFirstChild("Checkpoint")
+		if part and part:IsA("BasePart") then
+			local connection = part.Touched:Connect(function(hit)
+				if isPlayerTouching(player, hit) and not touched[checkpoint.Name] then
+					touched[checkpoint.Name] = true
+					local pos = part.Position + Vector3.new(0, 5, 0)
+					player:SetAttribute("LastCheckpointPosition", pos)
+					player:SetAttribute("LastCheckpointY", part.Position.Y)
+					CheckpointReachedEvent:FireClient(player)
+				end
+			end)
+
+			-- Store connection for cleanup
+			GameStateService.AddPlayerConnection(player, "checkpoint_" .. checkpoint.Name, connection)
+		end
+	end
+end
+
+local function rewardGold(player, hrp)
+	if not player or not hrp then return end
+
+	task.spawn(function()
+		local lastY = hrp.Position.Y
+		while player and player.Parent and hrp.Parent and GameStateService.IsPlayerAlive(player) do
+			local success, currentY = pcall(function() return hrp.Position.Y end)
+			if not success then break end
+
+			local delta = currentY - lastY
+			if delta >= 10 then
+				local gold = math.floor(delta / 10) * 5
+				if hasUpgrade and hasUpgrade(player, "Double Coins") then 
+					gold = gold * 2 
+				end
+
+				local stats = player:FindFirstChild("leaderstats")
+				local goldStat = stats and stats:FindFirstChild("Gold")
+				if goldStat and goldStat:IsA("IntValue") then
+					goldStat.Value = goldStat.Value + gold
+				end
+				lastY = currentY
+			end
+			task.wait(1.5)
+		end
+	end)
+end
+
+function MapLoaderService.SpawnPlayerOnMap(player, spawnPart, map, finishPart, gas)
+	if not player or not spawnPart or not map then
+		warn("SpawnPlayerOnMap: Missing required parameters")
+		return false
+	end
+
+	local context = GameStateService.GetContext()
+	if not context.readyPlayers[player] then 
+		warn("Player not ready:", player.Name)
+		return false
+	end
+
+	-- Wait for character properly
+	local character = player.Character or player.CharacterAdded:Wait()
+	local hrp = character:WaitForChild("HumanoidRootPart", 5)
+	if not hrp then 
+		warn("Could not find HumanoidRootPart for player:", player.Name)
+		return false
+	end
+
+	-- Handle sitting state - if player is sitting, force them to stand
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		-- Force player to stand if they're sitting
+		if humanoid.Sit then
+			humanoid.Sit = false
+			task.wait(0.1) -- Small delay to ensure state change
+		end
+
+		-- Also try to change state to ensure they're not in any special states
+		-- Check for various states that might interfere with teleportation
+		local currentState = humanoid:GetState()
+		if currentState == Enum.HumanoidStateType.Seated or 
+			currentState == Enum.HumanoidStateType.Physics or
+			currentState == Enum.HumanoidStateType.Climbing then
+			humanoid:ChangeState(Enum.HumanoidStateType.Running)
+			task.wait(0.1) -- Small delay to ensure state change
+		end
+	end
+
+	-- Safe spawning with multiple teleport methods
+	pcall(function()
+		hrp.Anchored = true
+
+		-- Method 1: Try SetPrimaryPartCFrame first
+		character:SetPrimaryPartCFrame(spawnPart.CFrame + Vector3.new(0, 10, 0))
+
+		-- Method 2: If that doesn't work, try direct CFrame assignment
+		task.wait(0.05)
+		if (hrp.Position - spawnPart.Position).Magnitude > 50 then
+			hrp.CFrame = spawnPart.CFrame + Vector3.new(0, 10, 0)
+		end
+
+		-- Method 3: Force position if still not working
+		task.wait(0.05)
+		if (hrp.Position - spawnPart.Position).Magnitude > 50 then
+			hrp.Position = spawnPart.Position + Vector3.new(0, 10, 0)
+		end
+	end)
+
+	-- Add a small delay to ensure the teleport is complete before unanchoring
+	task.wait(0.2) -- Increased delay for better reliability
+
+	SetTransparencyEvent:FireClient(player, true)
+
+	-- UI Updates
+	local resetCameraEvent = ReplicatedStorage:FindFirstChild("ResetCameraEvent")
+	if resetCameraEvent then
+		resetCameraEvent:FireClient(player)
+	end
+
+	-- Hide lobby GUIs and game menus for active players
+	print("Hiding UI for player:", player.Name)
+
+	-- Hide lobby GUIs
+	UIService.HideLobbyGUIsFor(player)
+
+	-- Hide game menus specifically
+	UIService.HideGameMenus(player)
+
+	-- Add a small delay to ensure the hide events are processed
+	task.delay(0.1, function()
+		UIService.HideLobbyGUIsFor(player)
+		UIService.HideGameMenus(player)
+	end)
+
+	if finishPart and gas then
+		UIService.ShowClimbGui(player, spawnPart.Position.Y, finishPart.Position.Y, gas)
+	end
+	UIService.StartGameCountdown(player)
+
+	-- Timer is now controlled by TimerStartZone - no need to start it here
+
+	-- Update player state - SET START TIME HERE
+	context.alivePlayers[player] = true
+	context.secondChanceUsed[player] = false
+	context.highestY[player] = hrp.Position.Y
+	player:SetAttribute("StartTime", os.clock()) -- This should match when timer starts
+	player:SetAttribute("LastCheckpointPosition", nil)
+	player:SetAttribute("LastCheckpointY", nil)
+
+	-- Setup tracking and rewards
+	setupCheckpointTracking(player, map)
+	rewardGold(player, hrp)
+
+	-- Handle player death
+	if humanoid then
+		local deathConnection = humanoid.Died:Connect(function()
+			print("Player died:", player.Name)
+			GameStateService.MarkPlayerDead(player)
+			context.highestY[player] = nil
+			context.readyPlayers[player] = nil
+			print("Firing ShowDeathGui for player:", player.Name)
+			UIService.ShowDeathGui(player)
+			SetTransparencyEvent:FireClient(player, false)
+
+			-- SpectateService will handle spectate UI automatically
+
+			if context.checkGameEndCallback then
+				context.checkGameEndCallback(map)
+			end
+		end)
+
+		-- Store death connection
+		GameStateService.AddPlayerConnection(player, "death", deathConnection)
+	end
+
+	-- Unanchor after setup
+	task.defer(function()
+		if hrp and hrp.Parent then
+			hrp.Anchored = false
+		end
+	end)
+
+	return true
+end
+
+function MapLoaderService.LoadMap(mapName)
+	local context = GameStateService.GetContext()
+	local mapsFolder = ReplicatedStorage:FindFirstChild("Maps")
+	if not mapsFolder then
+		warn("Maps folder not found in ReplicatedStorage")
+		return false
+	end
+
+	local mapTemplate = mapsFolder:FindFirstChild(mapName)
+	if not mapTemplate then 
+		warn("Map not found:", mapName) 
+		return false
+	end
+
+	local map = mapTemplate:Clone()
+	map.Name = "CurrentMap"
+	map:SetAttribute("OriginalMapName", mapName)
+	map.Parent = workspace
+	GameStateService.SetCurrentMap(map)
+
+	task.wait(0.5)
+
+	-- Find critical map parts with better error handling
+	local spawn = MapLoaderService.WaitForBasePart(map, "MapSpawn", 5)
+	if not spawn then
+		warn("MapSpawn not found in map:", mapName)
+		return false
+	end
+
+	local checkpointsFolder = map:FindFirstChild("Checkpoints", true)
+	if not checkpointsFolder then
+		warn("Checkpoints folder not found in map:", mapName)
+		return false
+	end
+
+	local finish = checkpointsFolder:FindFirstChild("FinishZone", true)
+	local gas = checkpointsFolder:FindFirstChild("Gas", true)
+
+	if not finish then warn("FinishZone not found in map:", mapName) end
+	if not gas then warn("Gas not found in map:", mapName) end
+
+	if not (finish and gas) then
+		warn("Critical map parts missing in:", mapName)
+		return false
+	end
+
+	setupEarlyGasProtection(gas, spawn)
+
+	-- Setup boost zones early so they work during countdown
+	local GasManagerService = require(script.Parent:WaitForChild("GasManagerService"))
+	GasManagerService.SetupBoostZones(map)
+
+	if context.connectFinishCallback then
+		context.connectFinishCallback(finish, map, {
+			alivePlayers = context.alivePlayers,
+			finishedPlayers = context.finishedPlayers,
+			highestY = context.highestY
+		})
+	end
+
+	-- Setup TimerStartZone detection
+	TimerZoneService.SetupZoneDetection(map)
+
+	print("Map loaded successfully:", mapName, "Ready for player spawning")
+
+	return true
+end
+
+function MapLoaderService.SpawnPlayersOnLoadedMap()
+	print("🎯 SpawnPlayersOnLoadedMap called")
+	local context = GameStateService.GetContext()
+	local map = GameStateService.GetCurrentMap()
+	if not map then
+		warn("No map loaded for player spawning")
+		return false
+	end
+
+	local spawn = MapLoaderService.WaitForBasePart(map, "MapSpawn", 5)
+	if not spawn then
+		warn("MapSpawn not found in loaded map")
+		return false
+	end
+
+	local checkpointsFolder = map:FindFirstChild("Checkpoints", true)
+	if not checkpointsFolder then
+		warn("Checkpoints folder not found in loaded map")
+		return false
+	end
+
+	local finish = checkpointsFolder:FindFirstChild("FinishZone", true)
+	local gas = checkpointsFolder:FindFirstChild("Gas", true)
+
+	-- Set joinable window
+	local joinableSeconds = 60
+	context.joinableUntil = GameStateService.GetCurrentTime() + joinableSeconds
+
+	-- Spawn players
+	local spawnedCount = 0
+	for _, player in pairs(Players:GetPlayers()) do
+		if not context.readyPlayers[player] then
+			-- Player is in lobby - they can spectate
+			-- SpectateService will handle UI updates automatically
+		else
+			GameStateService.MarkPlayerAlive(player)
+			if MapLoaderService.SpawnPlayerOnMap(player, spawn, map, finish, gas) then
+				spawnedCount = spawnedCount + 1
+			end
+		end
+	end
+
+	print("Players spawned on loaded map:", spawnedCount)
+
+	-- Broadcast countdown AFTER players are spawned and marked as ready
+	broadcastCountdown(joinableSeconds)
+
+	-- Start gas after delay
+	task.delay(joinableSeconds, function()
+		print("🟢 Starting gas after countdown")
+		if context.disconnectEarlyGasTouch then 
+			context.disconnectEarlyGasTouch() 
+		end
+		if context.loadGasCallback then 
+			context.loadGasCallback(map) 
+		end
+	end)
+
+	return true
+end
+
+function MapLoaderService.SendCountdownToPlayer(player)
+	local context = GameStateService.GetContext()
+	local countdownEvent = ReplicatedStorage:FindFirstChild("GasCountdownBroadcastEvent")
+	if not countdownEvent then return end
+
+	-- Calculate remaining time for late joiners
+	local gasStartTime = context.gasStartTime or GameStateService.GetGasStartTime()
+	if gasStartTime then
+		local currentTime = GameStateService.GetCurrentTime()
+		local remainingSeconds = math.max(0, gasStartTime - currentTime)
+
+		if remainingSeconds > 0 then
+			print("Sending remaining countdown to late joiner:", player.Name, "Remaining:", remainingSeconds)
+			countdownEvent:FireClient(player, remainingSeconds)
+		end
+	end
+end
+
+function MapLoaderService.JoinLatePlayer(player)
+	if not player then return false end
+
+	local context = GameStateService.GetContext()
+	local map = GameStateService.GetCurrentMap()
+	if not map then 
+		warn("No current map for late join")
+		return false
+	end
+
+	-- Check if still within joinable window
+	if not GameStateService.IsWithinJoinableWindow() then
+		warn("Late join window has expired for player:", player.Name)
+		return false
+	end
+
+	-- Find map parts
+	local spawn = MapLoaderService.WaitForBasePart(map, "MapSpawn", 5)
+	local checkpointsFolder = map:FindFirstChild("Checkpoints", true)
+	local finish = checkpointsFolder and checkpointsFolder:FindFirstChild("FinishZone", true)
+	local gas = checkpointsFolder and checkpointsFolder:FindFirstChild("Gas", true)
+
+	if not (spawn and finish and gas) then 
+		warn("Missing map parts for late join:", player.Name)
+		return false
+	end
+
+	-- Update player state
+	context.readyPlayers[player] = true
+	GameStateService.MarkPlayerAlive(player)
+
+	-- Handle UI
+	-- SpectateService will handle spectate UI automatically when player joins game
+	-- Hide lobby GUIs and game menus for late joiners
+	UIService.HideLobbyGUIsFor(player)
+	UIService.HideGameMenus(player)
+
+	-- Add a small delay to ensure the hide events are processed
+	task.delay(0.1, function()
+		UIService.HideLobbyGUIsFor(player)
+		UIService.HideGameMenus(player)
+	end)
+
+	-- Spawn player and send countdown
+	local success = MapLoaderService.SpawnPlayerOnMap(player, spawn, map, finish, gas)
+	if success then
+		MapLoaderService.SendCountdownToPlayer(player)
+		print("Late join successful for player:", player.Name)
+	end
+
+	return success
+end
+
+function MapLoaderService.WaitForBasePart(map, name, timeout)
+	if not map or not name then return nil end
+
+	timeout = timeout or 5
+	local start = tick()
+
+	while tick() - start < timeout do
+		for _, part in ipairs(map:GetDescendants()) do
+			if part:IsA("BasePart") and part.Name == name and part.Anchored and part.CanCollide then
+				return part
+			end
+		end
+		task.wait(0.05)
+	end
+
+	warn("Could not find BasePart with name:", name, "in map within", timeout, "seconds")
+	return nil
+end
+
+-- Export all functions
+MapLoaderService.SpawnPlayersOnLoadedMap = MapLoaderService.SpawnPlayersOnLoadedMap
+
+return MapLoaderService

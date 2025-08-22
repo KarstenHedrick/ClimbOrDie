@@ -1,0 +1,246 @@
+local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local dataReadyEvent = ReplicatedStorage:WaitForChild("PlayerDataReadyEvent")
+
+local PlayerDataService = {}
+
+local goldStore = DataStoreService:GetDataStore("PlayerGoldStore")
+local winsStore = DataStoreService:GetDataStore("PlayerWinsStore")
+local timeStore = DataStoreService:GetDataStore("PlayerBestTimesStore")
+local inventoryStore = DataStoreService:GetDataStore("PlayerInventoryStore")
+local donatedStore = DataStoreService:GetDataStore("PlayerDonationStore")
+
+local globalWins = DataStoreService:GetOrderedDataStore("GlobalWinsLeaderboard")
+local globalSkyrise = DataStoreService:GetOrderedDataStore("GlobalBestSkyriseTime")
+local globalDonation = DataStoreService:GetOrderedDataStore("GlobalDonationLeaderboard")
+
+function PlayerDataService.Load(player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local gold = Instance.new("IntValue", leaderstats)
+	gold.Name = "Gold"
+
+	local wins = Instance.new("IntValue", leaderstats)
+	wins.Name = "Wins"
+
+	local donated = Instance.new("IntValue", leaderstats)
+	donated.Name = "TotalDonated"
+
+	local inventory = Instance.new("Folder")
+	inventory.Name = "Inventory"
+	inventory.Parent = player
+
+	local powerUps = Instance.new("Folder", inventory)
+	powerUps.Name = "OwnedPowerUps"
+
+	local emotes = Instance.new("Folder", inventory)
+	emotes.Name = "OwnedEmotes"
+
+	local upgrades = Instance.new("Folder", inventory)
+	upgrades.Name = "OwnedUpgrades"
+
+	local eqPowerUp = Instance.new("StringValue", inventory)
+	eqPowerUp.Name = "EquippedPowerUp"
+
+	local eqEmote = Instance.new("StringValue", inventory)
+	eqEmote.Name = "EquippedEmote"
+
+	local glows = Instance.new("Folder", inventory)
+	glows.Name = "OwnedGlows"
+
+	local eqGlow = Instance.new("StringValue", inventory)
+	eqGlow.Name = "EquippedGlow"
+
+	-- Load Gold
+	pcall(function()
+		local val = goldStore:GetAsync(player.UserId)
+		if val then gold.Value = val end
+	end)
+
+	-- Load Wins
+	pcall(function()
+		local val = winsStore:GetAsync(player.UserId)
+		if val then wins.Value = val end
+	end)
+
+	-- Donated Value
+	pcall(function()
+		local val = donatedStore:GetAsync(player.UserId)
+		if val then donated.Value = val end
+	end)
+
+	-- Give DonatorGlow to existing donors when they join
+	if donated.Value > 0 then
+		local GlowManager = require(game.ServerScriptService.Modules:WaitForChild("GlowManager"))
+		if not GlowManager.PlayerAlreadyOwnsGlow(player, "DonatorGlow") then
+			print("Giving DonatorGlow to existing donor:", player.Name, "who donated", donated.Value, "Robux")
+			GlowManager.GrantGlow(player.UserId, "DonatorGlow")
+		end
+	end
+
+
+	-- Load Inventory
+	local equippedGlowValue = ""
+	pcall(function()
+		local data = inventoryStore:GetAsync(player.UserId)
+		if data then
+			for _, name in ipairs(data.OwnedPowerUps or {}) do Instance.new("StringValue", powerUps).Name = name end
+			for _, name in ipairs(data.OwnedEmotes or {}) do Instance.new("StringValue", emotes).Name = name end
+			for _, name in ipairs(data.OwnedUpgrades or {}) do Instance.new("StringValue", upgrades).Name = name end
+			for _, name in ipairs(data.OwnedGlows or {}) do Instance.new("StringValue", glows).Name = name end
+
+			eqGlow.Value = data.EquippedGlow or ""
+			eqPowerUp.Value = data.EquippedPowerUp or ""
+			eqEmote.Value = data.EquippedEmote or ""
+
+			equippedGlowValue = eqGlow.Value
+		end
+	end)
+
+	-- Validate equipped glow is still owned
+	if equippedGlowValue ~= "" then
+		local stillOwned = glows:FindFirstChild(equippedGlowValue)
+		if not stillOwned then
+			warn("[FIX] EquippedGlow '" .. equippedGlowValue .. "' not owned. Resetting.")
+			eqGlow.Value = ""
+			equippedGlowValue = ""
+		end
+	end
+
+	-- Apply the equipped glow (if valid)
+	if equippedGlowValue ~= "" then
+		local GlowManager = require(game.ServerScriptService.Modules:WaitForChild("GlowManager"))
+		GlowManager.SetEquippedGlow(player.UserId, equippedGlowValue)
+
+		-- Also ensure it's applied to the current character if it exists
+		task.defer(function()
+			GlowManager.EnsureEquippedGlowApplied(player)
+		end)
+	end
+
+	-- Load Best Times
+	local timesStr = "{}"
+	pcall(function()
+		local saved = timeStore:GetAsync(player.UserId)
+		if typeof(saved) == "table" then
+			for map, t in pairs(saved) do
+				if typeof(t) ~= "table" then
+					saved[map] = { AllTime = t, Weekly = t }
+				else
+					t.AllTime = t.AllTime or 9999
+					t.Weekly = t.Weekly or 9999
+				end
+			end
+			timesStr = HttpService:JSONEncode(saved)
+		end
+	end)
+	player:SetAttribute("BestTimes", timesStr)
+
+	-- After all data (gold, wins, inventory, etc.) is loaded:
+	dataReadyEvent:FireClient(player)
+end
+
+-- Player Data Save Logic
+
+local hasSaved = {}
+
+function PlayerDataService.Save(player)
+	if not player or not player.UserId then return end
+
+	if hasSaved[player.UserId] then
+		warn("[SAVE SKIPPED] Already saved recently for", player.Name)
+		return
+	end
+	hasSaved[player.UserId] = true
+
+	print("[Save Triggered] For", player.Name)
+
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local inventory = player:FindFirstChild("Inventory")
+	if not leaderstats or not inventory then return end
+
+	local gold = leaderstats:FindFirstChild("Gold")
+	local wins = leaderstats:FindFirstChild("Wins")
+	local donated = leaderstats:FindFirstChild("TotalDonated")
+	local bestTimesStr = player:GetAttribute("BestTimes")
+
+	if gold then pcall(function() goldStore:SetAsync(player.UserId, gold.Value) end) end
+	if wins then
+		pcall(function() winsStore:SetAsync(player.UserId, wins.Value) end)
+		pcall(function() globalWins:SetAsync(tostring(player.UserId), wins.Value) end)
+	end
+
+	if donated then
+		pcall(function() donatedStore:SetAsync(player.UserId, donated.Value) end)
+		-- Only save to OrderedDataStore if they have donated more than 0
+		if donated.Value > 0 then
+			pcall(function() globalDonation:SetAsync(tostring(player.UserId), donated.Value) end)
+		else
+			-- Remove from leaderboard if they have 0 donations
+			pcall(function() globalDonation:RemoveAsync(tostring(player.UserId)) end)
+		end
+	end
+
+	-- Save best times
+	if typeof(bestTimesStr) == "string" then
+		local ok, data = pcall(function() return HttpService:JSONDecode(bestTimesStr) end)
+		if ok then
+			pcall(function() timeStore:SetAsync(player.UserId, data) end)
+			if data["Skyrise"] then
+				local val = tonumber(data["Skyrise"].AllTime or data["Skyrise"])
+				if val and val > 0 then
+					pcall(function() globalSkyrise:SetAsync(tostring(player.UserId), val) end)
+				end
+			end
+		end
+	end
+
+	-- Save inventory
+	local invData = {
+		OwnedPowerUps = {},
+		OwnedEmotes = {},
+		OwnedUpgrades = {},
+		OwnedGlows = {},
+		EquippedPowerUp = "",
+		EquippedEmote = "",
+		EquippedGlow = ""
+	}
+
+	for _, item in ipairs(inventory:FindFirstChild("OwnedPowerUps"):GetChildren()) do
+		table.insert(invData.OwnedPowerUps, item.Name)
+	end
+	for _, item in ipairs(inventory:FindFirstChild("OwnedEmotes"):GetChildren()) do
+		table.insert(invData.OwnedEmotes, item.Name)
+	end
+	for _, item in ipairs(inventory:FindFirstChild("OwnedUpgrades"):GetChildren()) do
+		table.insert(invData.OwnedUpgrades, item.Name)
+	end
+	for _, item in ipairs(inventory:FindFirstChild("OwnedGlows"):GetChildren()) do
+		table.insert(invData.OwnedGlows, item.Name)
+	end
+
+	local ep = inventory:FindFirstChild("EquippedPowerUp")
+	local ee = inventory:FindFirstChild("EquippedEmote")
+	local eg = inventory:FindFirstChild("EquippedGlow")
+	invData.EquippedPowerUp = ep and ep.Value or ""
+	invData.EquippedEmote = ee and ee.Value or ""
+	invData.EquippedGlow = eg and eg.Value or ""
+
+	local ok, err = pcall(function()
+		inventoryStore:SetAsync(player.UserId, invData)
+	end)
+	if not ok then
+		warn("[SAVE ERROR] Failed to save inventory:", err)
+	end
+
+	-- Reset the flag after short delay in case they rejoin quickly
+	task.delay(10, function()
+		hasSaved[player.UserId] = nil
+	end)
+end
+
+return PlayerDataService

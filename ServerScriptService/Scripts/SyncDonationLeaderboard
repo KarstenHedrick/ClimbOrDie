@@ -1,0 +1,62 @@
+-- 📍 ServerScriptService > SyncDonationLeaderboard
+-- This script syncs all donation data from PlayerDonationStore to GlobalDonationLeaderboard on server startup
+
+local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
+
+local donatedStore = DataStoreService:GetDataStore("PlayerDonationStore")
+local globalDonation = DataStoreService:GetOrderedDataStore("GlobalDonationLeaderboard")
+
+-- Function to sync all donation data
+local function syncAllDonationData()
+	print("[SyncDonationLeaderboard] Starting donation data sync...")
+
+	local syncedCount = 0
+	local errorCount = 0
+
+	-- Get all current players and sync their donation data
+	for _, player in pairs(Players:GetPlayers()) do
+		local success, donatedAmount = pcall(function()
+			return donatedStore:GetAsync(player.UserId)
+		end)
+
+		if success and donatedAmount and donatedAmount > 0 then
+			local success2 = pcall(function()
+				globalDonation:SetAsync(tostring(player.UserId), donatedAmount)
+			end)
+
+			if success2 then
+				syncedCount = syncedCount + 1
+				print("[SyncDonationLeaderboard] Synced " .. player.Name .. ": " .. donatedAmount .. " Robux")
+			else
+				errorCount = errorCount + 1
+				warn("[SyncDonationLeaderboard] Failed to sync " .. player.Name)
+			end
+		end
+	end
+
+	print("[SyncDonationLeaderboard] Sync complete. Synced " .. syncedCount .. " players, " .. errorCount .. " errors")
+end
+
+-- Run sync on server startup
+task.wait(10) -- Wait for everything to load
+syncAllDonationData()
+
+-- Also sync when new players join (in case they have existing donation data)
+Players.PlayerAdded:Connect(function(player)
+	task.wait(5) -- Wait for player data to load
+
+	local success, donatedAmount = pcall(function()
+		return donatedStore:GetAsync(player.UserId)
+	end)
+
+	if success and donatedAmount and donatedAmount > 0 then
+		local success2 = pcall(function()
+			globalDonation:SetAsync(tostring(player.UserId), donatedAmount)
+		end)
+
+		if success2 then
+			print("[SyncDonationLeaderboard] Synced new player " .. player.Name .. ": " .. donatedAmount .. " Robux")
+		end
+	end
+end) 

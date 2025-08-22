@@ -1,0 +1,125 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local gui = script.Parent
+local frame = gui:WaitForChild("TimerFrame")
+local label = frame:WaitForChild("TimerLabel")
+
+-- Wait for events
+local showFinishTimeEvent = ReplicatedStorage:WaitForChild("ShowFinishTimeEvent")
+local showClimbGuiEvent = ReplicatedStorage:WaitForChild("ShowClimbGuiEvent")
+local showLobbyUIEvent = ReplicatedStorage:WaitForChild("ShowLobbyUIEvent")
+
+-- Timer zone events
+local startTimerEvent = ReplicatedStorage:WaitForChild("StartPlayerTimerEvent")
+local resetTimerEvent = ReplicatedStorage:WaitForChild("ResetPlayerTimerEvent")
+
+local timerRunning = false
+local startTime = 0
+
+-- Hide the GUI by default
+gui.Enabled = false
+
+local function startTimer()
+	if not timerRunning then -- Prevent multiple starts
+		gui.Enabled = true
+		startTime = os.clock()
+		timerRunning = true
+	end
+end
+
+local function resumeTimer()
+	if not timerRunning then
+		startTime = os.clock() -- Reset start time to current time when resuming
+		timerRunning = true
+	end
+end
+
+local function resetTimer()
+	if timerRunning then
+		startTime = os.clock() -- Reset start time to current time
+		timerRunning = false -- Stop the timer when in zone
+		label.Text = "0.00" -- Immediately show 0.00
+	end
+end
+
+local function stopTimer()
+	timerRunning = false
+	gui.Enabled = false
+end
+
+-- Show the timer GUI when player enters the map (but don't start timer yet)
+showClimbGuiEvent.OnClientEvent:Connect(function()
+	gui.Enabled = true
+end)
+
+-- Start timer when player leaves TimerStartZone
+startTimerEvent.OnClientEvent:Connect(function()
+	startTimer()
+end)
+
+-- Reset timer when player re-enters TimerStartZone
+resetTimerEvent.OnClientEvent:Connect(function()
+	resetTimer()
+end)
+
+-- Resume timer when player leaves TimerStartZone again
+local resumeTimerEvent = ReplicatedStorage:WaitForChild("ResumePlayerTimerEvent")
+resumeTimerEvent.OnClientEvent:Connect(function()
+	resumeTimer()
+end)
+
+-- Stop and hide timer when lobby UI is shown
+showLobbyUIEvent.OnClientEvent:Connect(function()
+	stopTimer()
+end)
+
+-- Stop the timer and show final time
+showFinishTimeEvent.OnClientEvent:Connect(function(elapsedTime)
+	timerRunning = false
+
+	if elapsedTime >= 60 then
+		local minutes = math.floor(elapsedTime / 60)
+		local seconds = elapsedTime % 60
+		label.Text = string.format("%02d:%05.2f", minutes, seconds)
+	else
+		label.Text = string.format("%.2f", elapsedTime)
+	end
+end)
+
+-- Continuously update the timer
+RunService.RenderStepped:Connect(function()
+	if timerRunning then
+		local now = os.clock()
+		local elapsed = now - startTime
+		if elapsed >= 60 then
+			local minutes = math.floor(elapsed / 60)
+			local seconds = elapsed % 60
+			label.Text = string.format("%02d:%05.2f", minutes, seconds)
+		else
+			label.Text = string.format("%.2f", elapsed)
+		end
+	end
+end)
+
+-- Debug: Check if player is already in game when script loads (for late joiners)
+task.spawn(function()
+	task.wait(1) -- Wait a moment for everything to load
+
+	-- Check if player has a character and is on the map
+	if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local hrp = player.Character.HumanoidRootPart
+		-- If player is not at lobby spawn (assumed to be at Y=150 or below), they might be on a map
+		if hrp.Position.Y > 200 and not timerRunning then
+
+			-- Check if there's a current map in workspace
+			local currentMap = workspace:FindFirstChild("CurrentMap")
+			if currentMap then
+				print("Current map found - showing timer GUI for late joiner")
+				gui.Enabled = true
+			end
+		end
+	end
+end)

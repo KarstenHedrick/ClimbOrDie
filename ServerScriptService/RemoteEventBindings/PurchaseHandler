@@ -1,0 +1,19 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PurchaseService = require(game.ServerScriptService.Services.PurchaseService)
+
+local purchaseEvent = ReplicatedStorage:WaitForChild("PurchaseItemEvent")
+local feedbackEvent = ReplicatedStorage:WaitForChild("PurchaseFeedbackEvent")
+local refreshEvent = ReplicatedStorage:WaitForChild("RefreshInventoryEvent")
+local refreshUpgradeGuiEvent = ReplicatedStorage:WaitForChild("RefreshUpgradeGuiEvent")
+
+purchaseEvent.OnServerEvent:Connect(function(player, item)
+	local success, message = PurchaseService.TryPurchase(player, item)
+
+	feedbackEvent:FireClient(player, message)
+
+	-- Only refresh for successful gold purchases, not for Robux prompts
+	if success and message:find("Successfully purchased") then
+		refreshEvent:FireClient(player, item.Category)
+		refreshUpgradeGuiEvent:FireClient(player)
+	end
+end)

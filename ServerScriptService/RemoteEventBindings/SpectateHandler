@@ -1,0 +1,21 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIService = require(game.ServerScriptService:WaitForChild("Services"):WaitForChild("UIService"))
+
+local spectateStartedEvent = ReplicatedStorage:WaitForChild("SpectateStartedEvent")
+local spectateEndedEvent = ReplicatedStorage:WaitForChild("SpectateEndedEvent")
+local readyEvent = ReplicatedStorage:WaitForChild("PlayerReadyEvent")
+
+-- Handle spectate started - hide restricted GUIs
+spectateStartedEvent.OnServerEvent:Connect(function(player)
+	UIService.HideSpectateRestrictedGUIsFor(player)
+end)
+
+-- Handle spectate ended - show restricted GUIs
+spectateEndedEvent.OnServerEvent:Connect(function(player)
+	UIService.ShowSpectateRestrictedGUIsFor(player)
+
+	-- Reset ready state when player stops spectating
+	-- This ensures the "Ready Up" button is in the correct state
+	readyEvent:FireClient(player, false)
+	print("Reset ready state for player who stopped spectating:", player.Name)
+end)

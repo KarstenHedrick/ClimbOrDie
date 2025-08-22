@@ -1,0 +1,47 @@
+local EmoteService = {}
+
+local emoteAnimations = {
+	["Wave"] = "rbxassetid://507770239",
+	["Dance"] = "rbxassetid://507771955",
+	["Laugh"] = "rbxassetid://507770818",
+}
+
+local activeTracks = {}
+
+function EmoteService.PlayEmote(player, emoteName)
+	local character = player.Character
+	if not character then return end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	local animId = emoteAnimations[emoteName]
+	if not animId then return end
+
+	local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
+
+	-- Stop previous
+	if activeTracks[player] then
+		activeTracks[player]:Stop()
+		activeTracks[player]:Destroy()
+		activeTracks[player] = nil
+	end
+
+	local anim = Instance.new("Animation")
+	anim.AnimationId = animId
+
+	local track = animator:LoadAnimation(anim)
+	track.Looped = false
+
+	track.Stopped:Connect(function()
+		if activeTracks[player] == track then
+			activeTracks[player] = nil
+		end
+	end)
+
+	track:Play()
+	activeTracks[player] = track
+end
+
+return EmoteService
+

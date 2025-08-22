@@ -1,0 +1,110 @@
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+-- Wait for the countdown event
+local countdownEvent
+repeat
+	countdownEvent = ReplicatedStorage:FindFirstChild("GasCountdownBroadcastEvent")
+	if not countdownEvent then task.wait(0.1) end
+until countdownEvent
+
+local gui = script.Parent
+local label = gui:WaitForChild("CountdownLabel")
+local alert = gui:WaitForChild("GasAlert")
+
+-- Duration-based countdown variables
+local countdownActive = false
+local connection = nil
+
+local function fadeOutCountdownLabel()
+	local fadeTween = TweenService:Create(label, TweenInfo.new(0.5), {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1
+	})
+	fadeTween:Play()
+	fadeTween.Completed:Wait()
+end
+
+local function showGasAlert()
+	alert.Visible = true
+	alert.ImageTransparency = 1
+	local sound = alert:FindFirstChild("AlertSound")
+	if sound then sound:Play() end
+
+	local fadeIn = TweenService:Create(alert, TweenInfo.new(0.5), {
+		ImageTransparency = 0
+	})
+	fadeIn:Play()
+	fadeIn.Completed:Wait()
+
+	task.wait(2)
+
+	local fadeOut = TweenService:Create(alert, TweenInfo.new(1.2), {
+		ImageTransparency = 1
+	})
+	fadeOut:Play()
+	fadeOut.Completed:Wait()
+	alert.Visible = false
+end
+
+local function startCountdownWithDuration(duration)
+	-- Clean up any existing countdown
+	if connection then 
+		connection:Disconnect()
+		connection = nil
+	end
+
+	countdownActive = true
+	local startTick = tick() -- Use tick() for precise client-side timing
+
+	print("Starting countdown with duration:", duration, "seconds at tick:", startTick)
+
+	connection = RunService.RenderStepped:Connect(function()
+		if not countdownActive then return end
+
+		local elapsed = tick() - startTick
+		local secondsLeft = math.max(0, math.ceil(duration - elapsed))
+
+		if secondsLeft > 0 then
+			gui.Enabled = true
+			label.Text = "GAS RISES IN " .. secondsLeft .. "..."
+			label.TextTransparency = 0
+			label.TextStrokeTransparency = 0
+		else
+			-- Countdown finished
+			countdownActive = false
+			if connection then
+				connection:Disconnect()
+				connection = nil
+			end
+
+			print("Countdown finished, showing gas alert")
+			fadeOutCountdownLabel()
+			showGasAlert()
+			gui.Enabled = false
+		end
+	end)
+end
+
+-- Handle countdown events from server
+countdownEvent.OnClientEvent:Connect(function(duration)
+	if typeof(duration) ~= "number" or duration <= 0 then
+		warn("Invalid countdown duration received:", duration)
+		return
+	end
+
+	print("Received countdown duration:", duration, "seconds")
+	startCountdownWithDuration(duration)
+end)
+
+-- Clean up when gui is being destroyed
+gui.AncestryChanged:Connect(function()
+	if not gui.Parent then
+		countdownActive = false
+		if connection then
+			connection:Disconnect()
+			connection = nil
+		end
+	end
+end)

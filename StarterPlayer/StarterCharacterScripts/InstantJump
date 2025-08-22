@@ -1,0 +1,46 @@
+-- 📍 LocalScript under StarterCharacterScripts
+
+local char = script.Parent
+local humanoid = char:WaitForChild("Humanoid")
+local root = char:WaitForChild("HumanoidRootPart")
+local player = game:GetService("Players").LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local jumpPower = 50
+local jumpCooldown = 0.1
+local lastJumpTime = 0
+
+-- Reset vertical velocity on landing
+humanoid.StateChanged:Connect(function(_, newState)
+	if newState == Enum.HumanoidStateType.Landed then
+		local vel = root.AssemblyLinearVelocity
+		root.AssemblyLinearVelocity = Vector3.new(vel.X, 0, vel.Z)
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+end)
+
+-- Helper to check grounded status
+local function isGrounded()
+	return humanoid.FloorMaterial ~= Enum.Material.Air
+end
+
+-- Backup jump boost if Roblox fails
+local function forceJump()
+	root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
+	root.AssemblyLinearVelocity += Vector3.new(0, jumpPower, 0)
+end
+
+-- Handle spacebar input
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.Space and isGrounded() and tick() - lastJumpTime >= jumpCooldown then
+		lastJumpTime = tick()
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		task.delay(0.05, function()
+			if isGrounded() then
+				forceJump()
+			end
+		end)
+	end
+end)

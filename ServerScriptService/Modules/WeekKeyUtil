@@ -1,0 +1,8 @@
+-- WeekKeyUtil.lua
+local WeekKeyUtil = {}
+
+function WeekKeyUtil.GetCurrentWeekKey()
+	return os.date("Week_%Y_%U")
+end
+
+return WeekKeyUtil

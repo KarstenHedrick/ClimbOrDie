@@ -1,0 +1,66 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local messageEvent = ReplicatedStorage:WaitForChild("GameMessageEvent")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Don't search for MessageFeed – create it here
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "PersistentMessageGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local frame = Instance.new("ScrollingFrame")
+frame.Name = "MessageFeed"
+frame.Size = UDim2.new(0.2, 0, 0.15, 0) -- Smaller width/height
+frame.Position = UDim2.new(0.02, 0, 0.02, 0) -- Top-left corner
+frame.BackgroundTransparency = 0.3
+frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+frame.BorderSizePixel = 0
+frame.ScrollBarThickness = 6
+frame.CanvasSize = UDim2.new(0, 0, 10, 0)
+frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+frame.ScrollingDirection = Enum.ScrollingDirection.Y
+
+frame.Parent = screenGui
+
+local layout = Instance.new("UIListLayout")
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = frame
+
+local messageIndex = 0
+
+local function addMessage(text)
+	messageIndex += 1
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 0, 24)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.Font = Enum.Font.Gotham
+	label.TextSize = 18
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextWrapped = true
+	label.Text = "‣ " .. text
+	label.LayoutOrder = messageIndex
+	label.Parent = frame
+
+	task.defer(function()
+		frame.CanvasPosition = Vector2.new(0, math.huge) -- scrolls all the way down
+	end)
+
+	task.delay(30, function()
+		if label and label.Parent then
+			label:Destroy()
+		end
+	end)
+end
+
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	task.defer(function()
+		frame.CanvasPosition = Vector2.new(0, math.huge)
+	end)
+end)
+
+messageEvent.OnClientEvent:Connect(addMessage)

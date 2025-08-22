@@ -1,0 +1,29 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local localPlayer = Players.LocalPlayer
+
+local transparencyEvent = ReplicatedStorage:WaitForChild("SetPlayerTransparencyEvent")
+
+local function setOthersTransparency(enabled)
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= localPlayer and player.Character then
+			for _, part in pairs(player.Character:GetDescendants()) do
+				if part:IsA("BasePart") or part:IsA("Decal") then
+					part.LocalTransparencyModifier = enabled and 0.8 or 0
+				end
+			end
+		end
+	end
+end
+
+transparencyEvent.OnClientEvent:Connect(function(enableTransparency)
+	setOthersTransparency(enableTransparency)
+end)
+
+-- Optional: When new players join mid-game
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAppearanceLoaded:Connect(function()
+		wait(0.25)
+		setOthersTransparency(true)
+	end)
+end)

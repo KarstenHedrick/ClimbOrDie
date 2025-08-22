@@ -1,0 +1,37 @@
+-- MusicConfig.lua
+-- Configuration file for lobby and game music
+-- You can customize the sound IDs, volumes, and other properties here
+
+local MusicConfig = {
+	-- Lobby Music Configuration
+	lobbyMusic = {
+		-- Your custom lobby music
+		soundId = "rbxassetid://140504214640605",
+		
+		-- Volume level (0.0 to 1.0)
+		volume = 0.5,
+		
+		-- Whether the music should loop
+		looped = true,
+		
+		-- Playback speed (1.0 is normal speed)
+		playbackSpeed = 1.0
+	},
+	
+	-- Game Music Configuration
+	gameMusic = {
+		-- Using same music as lobby for now (you can change this later)
+		soundId = "rbxassetid://140504214640605",
+		
+		-- Volume level (0.0 to 1.0)
+		volume = 0.3,
+		
+		-- Whether the music should loop
+		looped = true,
+		
+		-- Playback speed (1.0 is normal speed)
+		playbackSpeed = 1.0
+	}
+}
+
+return MusicConfig 

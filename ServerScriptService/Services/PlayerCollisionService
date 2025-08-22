@@ -1,0 +1,40 @@
+local PhysicsService = game:GetService("PhysicsService")
+local Players = game:GetService("Players")
+
+local PlayerCollisionService = {}
+
+local PLAYER_GROUP = "Players"
+
+-- Register the collision group
+local function setupCollisionGroup()
+	local success, result = pcall(function()
+		PhysicsService:RegisterCollisionGroup(PLAYER_GROUP)
+	end)
+
+	-- Make sure players don't collide with each other
+	PhysicsService:CollisionGroupSetCollidable(PLAYER_GROUP, PLAYER_GROUP, false)
+end
+
+-- Applies the collision group to all character parts
+local function applyNoCollision(character)
+	for _, part in ipairs(character:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.CollisionGroup = PLAYER_GROUP
+		end
+	end
+end
+
+function PlayerCollisionService.Init()
+	setupCollisionGroup()
+
+	Players.PlayerAdded:Connect(function(player)
+		player.CharacterAdded:Connect(function(character)
+			character:WaitForChild("HumanoidRootPart", 3)
+			task.defer(function()
+				applyNoCollision(character)
+			end)
+		end)
+	end)
+end
+
+return PlayerCollisionService

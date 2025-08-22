@@ -1,0 +1,225 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local SpectateService = {}
+
+-- RemoteEvents
+local spectateRequest = ReplicatedStorage:WaitForChild("SpectateRequestEvent")
+local sendAliveList = ReplicatedStorage:WaitForChild("AlivePlayerListEvent")
+local stopSpectateEvent = ReplicatedStorage:WaitForChild("ForceStopSpectatingEvent")
+local enableSpectateGuiEvent = ReplicatedStorage:WaitForChild("EnableSpectateGuiEvent")
+local playerDiedEvent = ReplicatedStorage:FindFirstChild("PlayerDiedWhileSpectatingEvent") or Instance.new("RemoteEvent")
+local spectateStartedEvent = ReplicatedStorage:WaitForChild("SpectateStartedEvent")
+local spectateEndedEvent = ReplicatedStorage:WaitForChild("SpectateEndedEvent")
+
+-- Set the name and parent for the playerDiedEvent if it was just created
+if not ReplicatedStorage:FindFirstChild("PlayerDiedWhileSpectatingEvent") then
+	playerDiedEvent.Name = "PlayerDiedWhileSpectatingEvent"
+	playerDiedEvent.Parent = ReplicatedStorage
+end
+
+-- Dependencies
+local GameStateService
+local UIService
+
+-- State
+local isGameInProgress = false
+local alivePlayers = {}
+local spectatingPlayers = {} -- Track who is currently spectating
+
+-- Initialize dependencies
+function SpectateService.Init(deps)
+	alivePlayers = deps.alivePlayers
+	GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+	UIService = require(script.Parent:WaitForChild("UIService"))
+end
+
+-- Check if a player is eligible to spectate
+function SpectateService.IsPlayerEligibleToSpectate(player)
+	if not player or not player.Parent then return false end
+	if not isGameInProgress then return false end
+
+	local state = GameStateService.GetState()
+
+	-- Player is eligible if they are NOT alive and NOT finished
+	-- This means they are either dead or in lobby
+	local isAlive = state.alivePlayers[player] == true
+	local isFinished = state.finishedPlayers[player] == true
+
+	return not isAlive and not isFinished
+end
+
+-- Get list of players that can be spectated (alive players only)
+function SpectateService.GetSpectatablePlayers()
+	local spectatablePlayers = {}
+
+	for player, isAlive in pairs(alivePlayers) do
+		if isAlive 
+			and player and player.Parent
+			and player.Character
+			and player.Character:FindFirstChild("Humanoid")
+			and player.Character.Humanoid.Health > 0
+		then
+			table.insert(spectatablePlayers, player)
+		end
+	end
+
+	return spectatablePlayers
+end
+
+-- Notify all spectating players that a specific player died
+function SpectateService.NotifyPlayerDied(playerWhoDied)
+	if not playerWhoDied or not playerWhoDied.Parent then return end
+
+	-- Send the died player to all spectating clients
+	for spectatingPlayer, _ in pairs(spectatingPlayers) do
+		if spectatingPlayer and spectatingPlayer.Parent then
+			playerDiedEvent:FireClient(spectatingPlayer, playerWhoDied)
+		end
+	end
+end
+
+-- Track when a player starts spectating
+function SpectateService.OnPlayerStartedSpectating(player)
+	if not player or not player.Parent then return end
+	spectatingPlayers[player] = true
+	print("Player started spectating:", player.Name)
+end
+
+-- Track when a player stops spectating
+function SpectateService.OnPlayerStoppedSpectating(player)
+	if not player or not player.Parent then return end
+	spectatingPlayers[player] = nil
+	print("Player stopped spectating:", player.Name)
+end
+
+-- Handle spectate request from client
+spectateRequest.OnServerEvent:Connect(function(player)
+	print("Spectate request received from", player.Name)
+
+	-- Validate player eligibility
+	if not SpectateService.IsPlayerEligibleToSpectate(player) then
+		print("Player", player.Name, "is not eligible to spectate")
+		return
+	end
+
+	-- Get list of players that can be spectated
+	local spectatablePlayers = SpectateService.GetSpectatablePlayers()
+
+	if #spectatablePlayers == 0 then
+		print("No players available to spectate")
+		return
+	end
+
+	-- Send list to client
+	sendAliveList:FireClient(player, spectatablePlayers)
+end)
+
+-- Handle spectate started event from client
+spectateStartedEvent.OnServerEvent:Connect(function(player)
+	print("Player started spectating:", player.Name)
+	SpectateService.OnPlayerStartedSpectating(player)
+end)
+
+-- Handle spectate ended event from client
+spectateEndedEvent.OnServerEvent:Connect(function(player)
+	print("Player stopped spectating:", player.Name)
+	SpectateService.OnPlayerStoppedSpectating(player)
+end)
+
+-- Update spectate UI for a specific player
+function SpectateService.UpdateSpectateUIForPlayer(player)
+	if not player or not player.Parent then return end
+
+	local shouldShow = SpectateService.IsPlayerEligibleToSpectate(player)
+	enableSpectateGuiEvent:FireClient(player, shouldShow)
+
+	print("Updated spectate UI for", player.Name, "- Show:", shouldShow)
+end
+
+-- Update spectate UI for all players
+function SpectateService.UpdateSpectateUIForAll()
+	for _, player in pairs(Players:GetPlayers()) do
+		SpectateService.UpdateSpectateUIForPlayer(player)
+	end
+end
+
+-- Hide spectate UI for all players
+function SpectateService.HideSpectateUIForAll()
+	for _, player in pairs(Players:GetPlayers()) do
+		stopSpectateEvent:FireClient(player)
+		enableSpectateGuiEvent:FireClient(player, false)
+	end
+
+	-- Clear spectating players list
+	spectatingPlayers = {}
+end
+
+-- Set game active state
+function SpectateService.SetGameActive(state)
+	isGameInProgress = state
+
+	if not state then
+		-- Game ended - hide spectate UI for everyone
+		SpectateService.HideSpectateUIForAll()
+		alivePlayers = {}
+	else
+		-- Game started - but don't show spectate UI yet
+		-- Wait for players to be spawned on the map first
+		-- The spectate UI will be shown after MapLoaderService.SpawnPlayersOnLoadedMap() completes
+		print("Game started - spectate UI will be shown after players are spawned")
+	end
+end
+
+-- New function to show spectate UI after players are spawned on the map
+function SpectateService.ShowSpectateUIAfterSpawn()
+	if not isGameInProgress then return end
+
+	-- Now show spectate UI for all players
+	SpectateService.UpdateSpectateUIForAll()
+	print("Showing spectate UI after players spawned on map")
+end
+
+-- Handle player state changes
+function SpectateService.OnPlayerStateChanged(player)
+	if not player or not player.Parent then return end
+
+	-- Update spectate UI for this player
+	SpectateService.UpdateSpectateUIForPlayer(player)
+end
+
+-- Handle player death
+function SpectateService.OnPlayerDied(player)
+	if not player or not player.Parent then return end
+
+	-- Notify all spectating players that this player died
+	SpectateService.NotifyPlayerDied(player)
+
+	-- Don't immediately enable spectate UI - wait for player to respawn in lobby
+	-- The spectate UI will be enabled when they respawn and are in the lobby
+	print("Player died, spectate UI will be enabled when they respawn in lobby:", player.Name)
+end
+
+-- Handle player finished
+function SpectateService.OnPlayerFinished(player)
+	if not player or not player.Parent then return end
+
+	-- Notify all spectating players that this player finished
+	SpectateService.NotifyPlayerDied(player)
+
+	-- Don't immediately enable spectate UI - wait for player to respawn in lobby
+	-- The spectate UI will be enabled when they respawn and are in the lobby
+	print("Player finished, spectate UI will be enabled when they respawn in lobby:", player.Name)
+end
+
+-- Handle player joined game (late join)
+function SpectateService.OnPlayerJoinedGame(player)
+	if not player or not player.Parent then return end
+
+	-- Disable spectate UI for player who joined
+	stopSpectateEvent:FireClient(player)
+	enableSpectateGuiEvent:FireClient(player, false)
+	print("Disabled spectate UI for player who joined game:", player.Name)
+end
+
+return SpectateService

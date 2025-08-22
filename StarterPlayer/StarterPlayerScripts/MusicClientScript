@@ -1,0 +1,135 @@
+-- MusicClientScript.lua
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
+
+local player = Players.LocalPlayer
+
+-- Wait for RemoteEvents
+local playLobbyMusicEvent = ReplicatedStorage:WaitForChild("PlayLobbyMusicEvent")
+local stopLobbyMusicEvent = ReplicatedStorage:WaitForChild("StopLobbyMusicEvent")
+local playGameMusicEvent = ReplicatedStorage:WaitForChild("PlayGameMusicEvent")
+local stopGameMusicEvent = ReplicatedStorage:WaitForChild("StopGameMusicEvent")
+
+-- Create sound objects
+local lobbyMusic = Instance.new("Sound")
+lobbyMusic.Name = "LobbyMusic"
+lobbyMusic.Parent = SoundService
+lobbyMusic.Volume = 0.5
+lobbyMusic.Looped = true
+
+local gameMusic = Instance.new("Sound")
+gameMusic.Name = "GameMusic"
+gameMusic.Parent = SoundService
+gameMusic.Volume = 0.3
+gameMusic.Looped = true
+
+-- Function to fade out a sound
+local function fadeOutSound(sound, duration)
+	if not sound or not sound.IsPlaying then return end
+
+	local startVolume = sound.Volume
+	local startTime = tick()
+
+	local connection
+	connection = game:GetService("RunService").Heartbeat:Connect(function()
+		local elapsed = tick() - startTime
+		local progress = math.min(elapsed / duration, 1)
+
+		sound.Volume = startVolume * (1 - progress)
+
+		if progress >= 1 then
+			sound:Stop()
+			connection:Disconnect()
+		end
+	end)
+end
+
+-- Function to fade in a sound
+local function fadeInSound(sound, targetVolume, duration)
+	if not sound then return end
+
+	sound.Volume = 0
+	sound:Play()
+
+	local startTime = tick()
+
+	local connection
+	connection = game:GetService("RunService").Heartbeat:Connect(function()
+		local elapsed = tick() - startTime
+		local progress = math.min(elapsed / duration, 1)
+
+		sound.Volume = targetVolume * progress
+
+		if progress >= 1 then
+			connection:Disconnect()
+		end
+	end)
+end
+
+-- Handle lobby music events
+playLobbyMusicEvent.OnClientEvent:Connect(function(musicConfig)
+	print("🎵 Received lobby music play event")
+
+	-- Stop game music if it's playing
+	if gameMusic.IsPlaying then
+		fadeOutSound(gameMusic, 1)
+	end
+
+	-- Update lobby music properties
+	if musicConfig then
+		lobbyMusic.SoundId = musicConfig.soundId or lobbyMusic.SoundId
+		lobbyMusic.Volume = musicConfig.volume or 0.5
+		lobbyMusic.Looped = musicConfig.looped ~= false
+		lobbyMusic.PlaybackSpeed = musicConfig.playbackSpeed or 1
+	end
+
+	-- Fade in lobby music
+	fadeInSound(lobbyMusic, lobbyMusic.Volume, 1)
+end)
+
+stopLobbyMusicEvent.OnClientEvent:Connect(function()
+	print("🎵 Received lobby music stop event")
+	fadeOutSound(lobbyMusic, 1)
+end)
+
+-- Handle game music events
+playGameMusicEvent.OnClientEvent:Connect(function(musicConfig)
+	print("🎵 Received game music play event")
+
+	-- Stop lobby music if it's playing
+	if lobbyMusic.IsPlaying then
+		fadeOutSound(lobbyMusic, 1)
+	end
+
+	-- Update game music properties
+	if musicConfig then
+		gameMusic.SoundId = musicConfig.soundId or gameMusic.SoundId
+		gameMusic.Volume = musicConfig.volume or 0.3
+		gameMusic.Looped = musicConfig.looped ~= false
+		gameMusic.PlaybackSpeed = musicConfig.playbackSpeed or 1
+	end
+
+	-- Fade in game music
+	fadeInSound(gameMusic, gameMusic.Volume, 1)
+end)
+
+stopGameMusicEvent.OnClientEvent:Connect(function()
+	print("🎵 Received game music stop event")
+	fadeOutSound(gameMusic, 1)
+end)
+
+-- Clean up when player leaves
+player.AncestryChanged:Connect(function(_, parent)
+	if not parent then
+		-- Player is leaving, clean up music
+		if lobbyMusic then
+			lobbyMusic:Destroy()
+		end
+		if gameMusic then
+			gameMusic:Destroy()
+		end
+	end
+end)
+
+print("🎵 MusicClientScript loaded for player:", player.Name) 

@@ -1,0 +1,112 @@
+local ShopItemData = {
+	PowerUp = {
+		["Super Jump"] = {
+			Price = 1000,
+			Currency = "Gold",
+			ShopIcon = "rbxassetid://88845960848492",
+			EquipIcon = "rbxassetid://92818593180300",
+			PowerUpIcon = "rbxassetid://138744482102143"
+		},
+		["Rocket Boost"] = {
+			Price = 3000,
+			Currency = "Gold",
+			ShopIcon = "rbxassetid://99683122264675",
+			EquipIcon = "rbxassetid://116609156339593",
+			PowerUpIcon = "rbxassetid://79627609810102"
+		},
+		["Low Gravity"] = {
+			Price = 3000,
+			Currency = "Gold",
+			ShopIcon = "rbxassetid://74366271642476",
+			EquipIcon = "rbxassetid://128886150967539",
+			PowerUpIcon = "rbxassetid://139825247197718"
+		},
+		["Float"] = {
+			Price = 2500,
+			Currency = "Gold",
+			ShopIcon = "rbxassetid://0", -- Add your float shop icon
+			EquipIcon = "rbxassetid://0", -- Add your float equip icon
+			PowerUpIcon = "rbxassetid://0" -- Add your float powerup icon
+		}
+	},
+	Upgrade = {
+		["Double Coins"] = {
+			Price = 200,
+			Currency = "Robux",
+			ShopIcon = "rbxassetid://104334869135256",
+			EquipIcon = "rbxassetid://97626249103825",
+			UpgradeBarIcon = "rbxassetid://99278531999026"
+		},
+		["Second Chance"] = {
+			Price = 200,
+			Currency = "Robux",
+			ShopIcon = "rbxassetid://76887788653143",
+			EquipIcon = "rbxassetid://90933358037107",
+			UpgradeBarIcon = "rbxassetid://117586003484064"
+		}
+	},
+	Emote = {
+		["Wave"] = {
+			Price = 200,
+			Currency = "Gold",
+			ShopIcon = "rbxassetid://72423820409977",   -- used in shop
+			EquipIcon = "rbxassetid://72423820409977",  -- used in equipment screen
+		},
+		["Dance"] = {
+			Price = 200,
+			Currency = "Gold",
+			ShopIcon = "rbxassetid://73940075393515",   -- used in shop
+			EquipIcon = "rbxassetid://73940075393515",  -- used in equipment screen
+		},
+		["Laugh"] = {
+			Price = 200,
+			Currency = "Gold",
+			ShopIcon = "rbxassetid://122778150694541",   -- used in shop
+			EquipIcon = "rbxassetid://122778150694541",  -- used in equipment screen
+		},
+	},
+	Glow = {
+		["SkyriseGlow"] = {
+			Name = "Skyrise Glow",
+			EquipIcon = "rbxassetid://119348977889994"
+		},
+		["WinsGlow"] = {
+			Name = "Wins Glow",
+			EquipIcon = "rbxassetid://128516887227301"
+		},
+		["WeeklySkyriseGlow"] = {
+			Name = "Weekly Skyrise Glow",
+			EquipIcon = "rbxassetid://79874201735921"
+		},
+		["ShadowGlow"] = {
+			Price = 200,
+			Currency = "Robux",
+			ShopIcon = "rbxassetid://0", -- Add your shadow glow shop icon
+			EquipIcon = "rbxassetid://0" -- Add your shadow glow equip icon
+		},
+		["BubblesGlow"] = {
+			Price = 200,
+			Currency = "Robux",
+			ShopIcon = "rbxassetid://0", -- Add your bubbles glow shop icon
+			EquipIcon = "rbxassetid://0" -- Add your bubbles glow equip icon
+		},
+		["HeartsGlow"] = {
+			Price = 200,
+			Currency = "Robux",
+			ShopIcon = "rbxassetid://0", -- Add your hearts glow shop icon
+			EquipIcon = "rbxassetid://0" -- Add your hearts glow equip icon
+		},
+		["GhostsGlow"] = {
+			Price = 200,
+			Currency = "Robux",
+			ShopIcon = "rbxassetid://0", -- Add your ghosts glow shop icon
+			EquipIcon = "rbxassetid://0" -- Add your ghosts glow equip icon
+		},
+		["DonatorGlow"] = {
+			Name = "Donator Glow",
+			EquipIcon = "rbxassetid://0" -- Add your donator glow equip icon
+		}
+	}
+}
+
+return ShopItemData 

@@ -1,0 +1,382 @@
+-- Services 
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local ShopItemData = require(ReplicatedStorage:WaitForChild("ShopItemData"))
+
+-- Player
+local player = Players.LocalPlayer
+
+-- Config
+local powerUpDuration = 10
+local rocketCooldown = 20
+local jumpCooldown = 10
+
+-- State
+local isPowerUpActive = false
+local isOnCooldown = false
+local secondChanceUsed = false
+local isFloating = false
+local floatBodyVelocity = nil
+
+-- RemoteEvents for server communication
+local powerUpActivatedEvent = ReplicatedStorage:WaitForChild("PowerUpActivatedEvent")
+
+-- Connections
+local inputConn, jumpConn, stateConn, equippedChangedConn
+
+-- Helpers
+local function getEquippedPowerUp()
+	local inv = player:FindFirstChild("Inventory")
+	return inv and inv:FindFirstChild("EquippedPowerUp")
+end
+
+local function hasUpgrade(player, upgradeName)
+	local upgrades = player:FindFirstChild("Inventory") and player.Inventory:FindFirstChild("OwnedUpgrades")
+	return upgrades and upgrades:FindFirstChild(upgradeName) ~= nil
+end
+
+-- Cooldown Display
+local function showCooldown(duration, powerUpFrame, cooldownLabel)
+	isOnCooldown = true
+	powerUpFrame.Visible = true
+	cooldownLabel.Visible = true
+	cooldownLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
+	cooldownLabel.TextStrokeTransparency = 0
+	cooldownLabel.Text = "Cooldown: " .. math.ceil(duration)
+
+	local startTime = tick()
+	RunService:UnbindFromRenderStep("PowerUpCooldown")
+	RunService:BindToRenderStep("PowerUpCooldown", Enum.RenderPriority.Last.Value, function()
+		local elapsed = tick() - startTime
+		local remaining = math.max(0, math.ceil(duration - elapsed))
+		cooldownLabel.Text = "Cooldown: " .. remaining
+
+		if remaining <= 0 then
+			RunService:UnbindFromRenderStep("PowerUpCooldown")
+			cooldownLabel.Visible = false
+			isOnCooldown = false
+		end
+	end)
+end
+
+-- Low Gravity
+local function activateLowGravity(humanoid, rootPart, powerUpFrame, cooldownLabel)
+	if isPowerUpActive or isOnCooldown then return end
+
+	isPowerUpActive = true
+
+	-- Store original gravity
+	local originalGravity = workspace.Gravity
+	workspace.Gravity = 100 -- Higher gravity for less floaty jumps
+
+	local startTime = tick()
+	cooldownLabel.Visible = true
+	cooldownLabel.Text = tostring(powerUpDuration)
+
+	-- Notify server to show effects for all players
+	powerUpActivatedEvent:FireServer("LowGravity", powerUpDuration)
+
+	RunService:UnbindFromRenderStep("PowerUpActive")
+	RunService:BindToRenderStep("PowerUpActive", Enum.RenderPriority.Last.Value, function()
+		local elapsed = tick() - startTime
+		local remaining = math.ceil(powerUpDuration - elapsed)
+		cooldownLabel.Text = tostring(math.max(0, remaining))
+
+		if elapsed >= powerUpDuration then
+			RunService:UnbindFromRenderStep("PowerUpActive")
+			isPowerUpActive = false
+			workspace.Gravity = originalGravity -- Restore original gravity
+			showCooldown(10, powerUpFrame, cooldownLabel)
+		end
+	end)
+end
+
+
+-- Rocket Boost
+local function activateRocket(humanoid, rootPart, powerUpFrame, cooldownLabel)
+	if isPowerUpActive or isOnCooldown then return end
+
+	local lookVector = workspace.CurrentCamera.CFrame.LookVector
+
+	isPowerUpActive = true
+
+	-- Notify server to show effects for all players
+	powerUpActivatedEvent:FireServer("RocketBoost", 0.5)
+
+	-- Apply rocket boost with multiple methods to ensure it works
+	task.defer(function()
+		-- Method 1: Direct velocity application
+		rootPart.AssemblyLinearVelocity = lookVector.Unit * 200
+
+		-- Method 2: Force the humanoid to jump state if not already
+		if humanoid:GetState() ~= Enum.HumanoidStateType.Jumping then
+			humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+
+		-- Method 3: Additional velocity boost after a small delay to ensure it takes effect
+		task.delay(0.05, function()
+			if rootPart and rootPart.Parent and isPowerUpActive then
+				rootPart.AssemblyLinearVelocity = lookVector.Unit * 200
+			end
+		end)
+	end)
+
+	task.delay(0.5, function()
+		isPowerUpActive = false
+	end)
+
+	showCooldown(rocketCooldown, powerUpFrame, cooldownLabel)
+end
+
+-- Super Jump
+local function activateSuperJump(humanoid, rootPart, defaultJumpPower, powerUpFrame, cooldownLabel)
+	if isPowerUpActive or isOnCooldown then return end
+
+	isPowerUpActive = true
+	humanoid.UseJumpPower = true
+	humanoid.JumpPower = 100 -- Higher jump power for super jump
+
+	-- Notify server to show effects for all players
+	powerUpActivatedEvent:FireServer("SuperJump", powerUpDuration)
+
+	local startTime = tick()
+	cooldownLabel.Visible = true
+
+	RunService:UnbindFromRenderStep("PowerUpActive")
+	RunService:BindToRenderStep("PowerUpActive", Enum.RenderPriority.Last.Value, function()
+		local elapsed = tick() - startTime
+		local remaining = math.ceil(powerUpDuration - elapsed)
+		cooldownLabel.Text = tostring(math.max(0, remaining))
+
+		if elapsed >= powerUpDuration then
+			RunService:UnbindFromRenderStep("PowerUpActive")
+			isPowerUpActive = false
+			humanoid.JumpPower = defaultJumpPower
+			showCooldown(jumpCooldown, powerUpFrame, cooldownLabel)
+		end
+	end)
+end
+
+-- Float
+local function activateFloat(humanoid, rootPart, powerUpFrame, cooldownLabel)
+	if isOnCooldown then return end
+
+	-- If already floating, stop floating
+	if isFloating then
+		isFloating = false
+		if floatBodyVelocity then
+			floatBodyVelocity:Destroy()
+			floatBodyVelocity = nil
+		end
+
+		-- Notify server to stop float effects for all players
+		powerUpActivatedEvent:FireServer("FloatStop", 0)
+
+		RunService:UnbindFromRenderStep("FloatActive")
+		cooldownLabel.Visible = false
+		showCooldown(20, powerUpFrame, cooldownLabel)
+		return
+	end
+
+	-- Start floating
+	isFloating = true
+
+	-- Create floating effect
+	floatBodyVelocity = Instance.new("BodyVelocity")
+	floatBodyVelocity.Velocity = Vector3.new(0, 5, 0) -- Much slower upward movement
+	floatBodyVelocity.MaxForce = Vector3.new(0, rootPart:GetMass() * 2000, 0)
+	floatBodyVelocity.P = 5000
+	floatBodyVelocity.Parent = rootPart
+
+	-- Notify server to show float effects for all players
+	powerUpActivatedEvent:FireServer("Float", powerUpDuration)
+
+	local startTime = tick()
+	cooldownLabel.Visible = true
+	cooldownLabel.Text = tostring(powerUpDuration)
+
+	RunService:UnbindFromRenderStep("FloatActive")
+	RunService:BindToRenderStep("FloatActive", Enum.RenderPriority.Last.Value, function()
+		local elapsed = tick() - startTime
+		local remaining = math.ceil(powerUpDuration - elapsed)
+		cooldownLabel.Text = tostring(math.max(0, remaining))
+
+		if elapsed >= powerUpDuration then
+			RunService:UnbindFromRenderStep("FloatActive")
+			isFloating = false
+			if floatBodyVelocity then
+				floatBodyVelocity:Destroy()
+				floatBodyVelocity = nil
+			end
+
+			-- Notify server to stop float effects for all players
+			powerUpActivatedEvent:FireServer("FloatStop", 0)
+
+			cooldownLabel.Visible = false
+			showCooldown(20, powerUpFrame, cooldownLabel)
+		end
+	end)
+end
+
+-- Setup
+local function setupPowerUpSystem(character)
+	local humanoid = character:WaitForChild("Humanoid")
+	local rootPart = character:WaitForChild("HumanoidRootPart")
+	local defaultJumpPower = humanoid.JumpPower
+
+	-- Re-fetch GUI after respawn
+	local gui = player:WaitForChild("PlayerGui")
+	local timerGui = gui:WaitForChild("PowerUpTimerGui")
+	local powerUpFrame = timerGui:WaitForChild("PowerUpFrame")
+	local cooldownLabel = powerUpFrame:WaitForChild("CooldownLabel")
+
+	local iconButton = powerUpFrame:WaitForChild("Icon")
+
+	iconButton.Activated:Connect(function()
+		if isOnCooldown then return end
+		local equipped = getEquippedPowerUp()
+		if not equipped then return end
+
+		if equipped.Value == "Rocket Boost" then
+			activateRocket(humanoid, rootPart, powerUpFrame, cooldownLabel)
+		elseif equipped.Value == "Super Jump" then
+			activateSuperJump(humanoid, rootPart, defaultJumpPower, powerUpFrame, cooldownLabel)
+		elseif equipped.Value == "Low Gravity" then
+			activateLowGravity(humanoid, rootPart, powerUpFrame, cooldownLabel)
+		elseif equipped.Value == "Float" then
+			activateFloat(humanoid, rootPart, powerUpFrame, cooldownLabel)
+		end
+	end)
+
+	local jumpCount = 0
+	secondChanceUsed = false
+	isPowerUpActive = false
+	isOnCooldown = false
+
+	-- Disconnect old
+	for _, conn in ipairs({inputConn, jumpConn, stateConn}) do if conn then conn:Disconnect() end end
+	RunService:UnbindFromRenderStep("PowerUpActive")
+	RunService:UnbindFromRenderStep("PowerUpCooldown")
+	RunService:UnbindFromRenderStep("FloatActive")
+
+	-- Reset UI
+	powerUpFrame.Visible = false
+	cooldownLabel.Visible = false
+	cooldownLabel.Text = "Label"
+
+	-- Reset float state
+	isFloating = false
+	if floatBodyVelocity then
+		floatBodyVelocity:Destroy()
+		floatBodyVelocity = nil
+	end
+
+	-- Landing reset
+	stateConn = humanoid.StateChanged:Connect(function(_, state)
+		if state == Enum.HumanoidStateType.Landed then
+			jumpCount = 0
+		end
+	end)
+
+	-- Safe position tracking with raycast grounding
+	task.spawn(function()
+		while humanoid and humanoid.Parent do
+			local raycastParams = RaycastParams.new()
+			raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+			raycastParams.FilterDescendantsInstances = {character}
+
+			local rayOrigin = rootPart.Position
+			local rayDirection = Vector3.new(0, -4, 0)
+			local rayResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+
+			if rayResult and humanoid:GetState() == Enum.HumanoidStateType.Running then
+				player:SetAttribute("LastSafePosition", rootPart.Position + Vector3.new(0, 5, 0))
+			end
+
+			task.wait(0.5)
+		end
+	end)
+
+	-- Second Chance logic
+	local ShowSecondChanceUIEvent = ReplicatedStorage:WaitForChild("ShowSecondChanceUIEvent")
+
+	ShowSecondChanceUIEvent.OnClientEvent:Connect(function()
+		local safePos = player:GetAttribute("LastSafePosition")
+		if safePos and rootPart and rootPart.Parent then
+			rootPart.CFrame = CFrame.new(safePos)
+			humanoid.Health = humanoid.MaxHealth * 0.5
+
+			-- Visual effect
+			local effect = Instance.new("ParticleEmitter")
+			effect.Texture = "rbxassetid://244905904"
+			effect.Parent = rootPart
+			game.Debris:AddItem(effect, 2)
+		end
+	end)
+
+	-- Jump logic
+	jumpConn = UserInputService.JumpRequest:Connect(function()
+		local equipped = getEquippedPowerUp()
+		if equipped and equipped.Value == "Super Jump" and isPowerUpActive then
+			-- Apply super jump velocity boost for every jump during the powerup
+			task.defer(function()
+				rootPart.Velocity = Vector3.new(rootPart.Velocity.X, 60, rootPart.Velocity.Z)
+
+				-- Additional boosts with small delays to ensure it works on all surfaces
+				task.delay(0.05, function()
+					if rootPart and rootPart.Parent and isPowerUpActive then
+						rootPart.Velocity = Vector3.new(rootPart.Velocity.X, 60, rootPart.Velocity.Z)
+					end
+				end)
+
+				task.delay(0.1, function()
+					if rootPart and rootPart.Parent and isPowerUpActive then
+						rootPart.Velocity = Vector3.new(rootPart.Velocity.X, 60, rootPart.Velocity.Z)
+					end
+				end)
+			end)
+		end
+	end)
+
+	-- Input logic
+	local function bindInput()
+		if inputConn then inputConn:Disconnect() end
+		inputConn = UserInputService.InputBegan:Connect(function(input, processed)
+			if processed or isOnCooldown then return end
+			local equipped = getEquippedPowerUp()
+			if not equipped then return end
+			if input.KeyCode == Enum.KeyCode.F then
+				if equipped.Value == "Rocket Boost" then
+					activateRocket(humanoid, rootPart, powerUpFrame, cooldownLabel)
+				elseif equipped.Value == "Super Jump" then
+					activateSuperJump(humanoid, rootPart, defaultJumpPower, powerUpFrame, cooldownLabel)
+				elseif equipped.Value == "Low Gravity" then
+					activateLowGravity(humanoid, rootPart, powerUpFrame, cooldownLabel)
+				elseif equipped.Value == "Float" then
+					activateFloat(humanoid, rootPart, powerUpFrame, cooldownLabel)
+				end
+			end
+		end)
+	end
+
+	bindInput()
+
+	local equippedPowerUp = getEquippedPowerUp()
+	if equippedChangedConn then equippedChangedConn:Disconnect() end
+	if equippedPowerUp then
+		equippedChangedConn = equippedPowerUp.Changed:Connect(bindInput)
+	end
+end
+
+-- Init
+if player.Character then
+	setupPowerUpSystem(player.Character)
+end
+
+player.CharacterAdded:Connect(function(char)
+	char:WaitForChild("Humanoid")
+	char:WaitForChild("HumanoidRootPart")
+	setupPowerUpSystem(char)
+end)

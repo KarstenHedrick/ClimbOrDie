@@ -1,0 +1,240 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local gui = script.Parent
+local joinButton = gui:WaitForChild("JoinGameButton") :: ImageButton
+local readyButton = gui:WaitForChild("ReadyButton") :: ImageButton
+local playerStatus = gui:FindFirstChild("PlayerStatus") :: TextLabel
+
+local joinEvent = ReplicatedStorage:WaitForChild("JoinGameRequestEvent")
+local countdownEvent = ReplicatedStorage:WaitForChild("GasCountdownBroadcastEvent")
+local hideLobbyEvent = ReplicatedStorage:WaitForChild("HideLobbyUIEvent")
+local showLobbyEvent = ReplicatedStorage:WaitForChild("ShowLobbyUIEvent")
+
+-- Ensure gameEndedEvent exists
+local gameEndedEvent = ReplicatedStorage:FindFirstChild("GameEndedEvent")
+if not gameEndedEvent then
+	gameEndedEvent = Instance.new("RemoteEvent")
+	gameEndedEvent.Name = "GameEndedEvent"
+	gameEndedEvent.Parent = ReplicatedStorage
+end
+
+-- State variables
+local canJoin = false
+local hasJoinedGame = false
+local countdownActive = false
+local heartbeatConnection = nil
+local lobbyHidden = false -- Track if lobby UI has been hidden
+
+-- Shared start time for synchronization across all countdowns
+local sharedStartTick = nil
+
+-- Duration-based countdown function with perfect synchronization
+local function startCountdownWithDuration(duration)
+	-- Clean up existing countdown
+	if heartbeatConnection then
+		heartbeatConnection:Disconnect()
+		heartbeatConnection = nil
+	end
+
+	countdownActive = true
+
+	-- Use a shared start time that gets set once per game
+	-- This ensures all countdowns start at exactly the same moment
+	if not sharedStartTick then
+		sharedStartTick = tick()
+	end
+
+	local startTick = sharedStartTick
+
+	print("Starting lobby countdown with duration:", duration, "seconds, shared start tick:", startTick)
+
+	heartbeatConnection = RunService.Heartbeat:Connect(function()
+		if not countdownActive or hasJoinedGame then return end
+
+		local elapsed = tick() - startTick
+		local timeLeft = math.max(0, duration - elapsed)
+		local secondsLeft = math.ceil(timeLeft)
+
+		if secondsLeft > 0 then
+			-- Countdown is active - show join option (only if lobby not hidden)
+			if not lobbyHidden then
+				playerStatus.Text = "MATCH IN PROGRESS"
+				joinButton.Visible = true
+				readyButton.Visible = false
+				canJoin = true
+			else
+				-- CRITICAL SAFETY: Ensure UI is hidden if lobby is hidden
+				playerStatus.Visible = false
+				joinButton.Visible = false
+				readyButton.Visible = false
+				canJoin = false
+			end
+		else
+			-- Countdown ended - no more joining (only if lobby not hidden)
+			countdownActive = false
+			if not lobbyHidden then
+				joinButton.Visible = false
+				readyButton.Visible = true
+			else
+				-- CRITICAL SAFETY: Ensure UI is hidden if lobby is hidden
+				joinButton.Visible = false
+				readyButton.Visible = false
+			end
+			canJoin = false
+
+			-- Clean up connection
+			if heartbeatConnection then
+				heartbeatConnection:Disconnect()
+				heartbeatConnection = nil
+			end
+
+			print("Lobby countdown finished - joining no longer available")
+		end
+	end)
+end
+
+-- Handle countdown events from server (now duration-based)
+countdownEvent.OnClientEvent:Connect(function(duration)
+	print("JoinButtonScript: Received countdown event with duration:", duration)
+
+	if typeof(duration) ~= "number" or duration <= 0 then
+		warn("Invalid countdown duration received:", duration)
+		return
+	end
+
+	-- Don't show join countdown if player already joined
+	if hasJoinedGame then 
+		print("Player already joined, ignoring countdown")
+		return 
+	end
+
+	-- CRITICAL FIX: Don't show countdown if lobby UI is hidden
+	-- This prevents "Match in Progress" text from appearing when it shouldn't
+	if lobbyHidden then
+		print("Lobby UI is hidden - not showing countdown UI elements")
+		return
+	end
+
+	print("Received lobby countdown duration:", duration, "seconds")
+	startCountdownWithDuration(duration)
+end)
+
+-- Game ended - reset to lobby state
+gameEndedEvent.OnClientEvent:Connect(function()
+	print("Game ended - resetting lobby state")
+
+	hasJoinedGame = false
+	countdownActive = false
+	canJoin = false
+	lobbyHidden = false -- Reset hidden state
+	sharedStartTick = nil -- Reset shared start tick for next game
+
+	-- Clean up countdown
+	if heartbeatConnection then
+		heartbeatConnection:Disconnect()
+		heartbeatConnection = nil
+	end
+
+	-- Reset UI to lobby state
+	playerStatus.Text = "WAITING FOR PLAYERS"
+	playerStatus.Visible = true
+	joinButton.Visible = false
+	readyButton.Visible = true
+end)
+
+-- Hide lobby UI when game starts
+hideLobbyEvent.OnClientEvent:Connect(function()
+	print("JoinButtonScript: HideLobbyUIEvent received - stopping visibility management")
+	lobbyHidden = true
+
+	-- Stop the countdown heartbeat but preserve the countdown state
+	if heartbeatConnection then
+		heartbeatConnection:Disconnect()
+		heartbeatConnection = nil
+	end
+	-- Don't reset countdownActive here - preserve it for when spectating ends
+	-- countdownActive = false
+
+	-- Hide all elements
+	joinButton.Visible = false
+	readyButton.Visible = false
+	playerStatus.Visible = false
+end)
+
+-- Show lobby UI when spectating ends or returning to lobby
+showLobbyEvent.OnClientEvent:Connect(function()
+	print("JoinButtonScript: ShowLobbyUIEvent received - restoring visibility management")
+	lobbyHidden = false
+
+	-- Check if there's an active countdown - if so, show "Join Game"
+	if countdownActive and not hasJoinedGame then
+		playerStatus.Text = "MATCH IN PROGRESS"
+		playerStatus.Visible = true
+		joinButton.Visible = true
+		readyButton.Visible = false
+		canJoin = true
+		print("Showing Join Game - countdown is active")
+	else
+		-- No active countdown - show default lobby state
+		playerStatus.Text = "WAITING FOR PLAYERS"
+		playerStatus.Visible = true
+		joinButton.Visible = false
+		readyButton.Visible = true
+		canJoin = false
+		print("Showing Ready Up - no active countdown")
+	end
+
+	print("Lobby UI restored - countdownActive:", countdownActive, "hasJoinedGame:", hasJoinedGame)
+end)
+
+-- Join button clicked
+joinButton.MouseButton1Click:Connect(function()
+	if canJoin and not hasJoinedGame and countdownActive then
+		print("Player attempting to join late")
+
+		hasJoinedGame = true
+		canJoin = false
+		countdownActive = false
+
+		-- Update UI immediately
+		joinButton.Visible = false
+		readyButton.Visible = false
+		playerStatus.Visible = false
+
+		-- Clean up countdown
+		if heartbeatConnection then
+			heartbeatConnection:Disconnect()
+			heartbeatConnection = nil
+		end
+
+		-- Request to join the game
+		joinEvent:FireServer()
+	else
+		-- Debug why join failed
+		if not canJoin then
+			print("Cannot join - canJoin is false")
+		elseif hasJoinedGame then
+			print("Cannot join - already joined")
+		elseif not countdownActive then
+			print("Cannot join - countdown not active")
+		end
+	end
+end)
+
+-- Clean up when GUI is destroyed
+gui.AncestryChanged:Connect(function()
+	if not gui.Parent then
+		countdownActive = false
+		if heartbeatConnection then
+			heartbeatConnection:Disconnect()
+			heartbeatConnection = nil
+		end
+	end
+end)
+
+-- Initialize lobby state
+playerStatus.Text = "WAITING FOR PLAYERS"
+playerStatus.Visible = true
+joinButton.Visible = false
+readyButton.Visible = true

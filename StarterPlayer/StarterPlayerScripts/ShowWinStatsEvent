@@ -1,0 +1,72 @@
+-- MatchStatsDisplayScript (LocalScript inside StarterPlayerScripts or GUI)
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local player = Players.LocalPlayer
+local gui = player:WaitForChild("PlayerGui")
+local winGui = gui:WaitForChild("MatchStatsGui")
+local statsFrame = winGui:WaitForChild("StatsFrame")
+
+-- UI Elements
+local timeLabel = statsFrame:WaitForChild("TimeLabel")
+local goldLabel = statsFrame:WaitForChild("GoldLabel")
+local winsLabel = statsFrame:WaitForChild("WinsLabel")
+local victoryImage = statsFrame:WaitForChild("VictoryLabel")
+
+-- Event
+local showStatsEvent = ReplicatedStorage:WaitForChild("ShowWinStatsEvent")
+
+-- Initial state: hide everything
+winGui.Enabled = false
+victoryImage.ImageTransparency = 1
+for _, child in ipairs(statsFrame:GetChildren()) do
+	if child:IsA("TextLabel") then
+		child.TextTransparency = 1
+	end
+end
+
+-- Show and animate stats
+showStatsEvent.OnClientEvent:Connect(function(stats)
+	-- Fill in stat values
+	local formattedTime = string.format("%.2f", stats.time or 0)
+	timeLabel.Text = "TIME: " .. formattedTime .. "s"
+	goldLabel.Text = "+" .. (stats.gold or 0) .. " GOLD"
+	winsLabel.Text = "+" .. (stats.wins or 1) .. " TROPHIES"
+
+	winGui.Enabled = true
+
+	-- Fade in text
+	for _, child in ipairs(statsFrame:GetChildren()) do
+		if child:IsA("TextLabel") then
+			TweenService:Create(child, TweenInfo.new(0.5), {
+				TextTransparency = 0
+			}):Play()
+		end
+	end
+
+	-- Fade in victory image
+	TweenService:Create(victoryImage, TweenInfo.new(0.5), {
+		ImageTransparency = 0
+	}):Play()
+
+	-- Fade out after 8 seconds
+	task.delay(8, function()
+		for _, child in ipairs(statsFrame:GetChildren()) do
+			if child:IsA("TextLabel") then
+				TweenService:Create(child, TweenInfo.new(1), {
+					TextTransparency = 1
+				}):Play()
+			end
+		end
+
+		TweenService:Create(victoryImage, TweenInfo.new(1), {
+			ImageTransparency = 1
+		}):Play()
+
+		-- Hide GUI after fade out
+		task.delay(1, function()
+			winGui.Enabled = false
+		end)
+	end)
+end)

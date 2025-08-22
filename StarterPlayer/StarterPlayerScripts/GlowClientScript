@@ -1,0 +1,261 @@
+-- Location: StarterPlayer > StarterPlayerScripts > GlowClientScript
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- Configuration (shared with server)
+local GLOW_CONFIG = {
+	COLORS = {
+		SkyriseGlow = Color3.fromRGB(170, 0, 255),
+		WeeklySkyriseGlow = Color3.fromRGB(255, 50, 50),
+		JungleGlow = Color3.fromRGB(0, 150, 0), -- Green jungle color
+		WeeklyJungleGlow = Color3.fromRGB(255, 165, 0), -- Orange weekly jungle color
+		WinsGlow = Color3.fromRGB(255, 215, 0),
+		ShadowGlow = Color3.fromRGB(0, 0, 0), -- Dark shadow color
+		BubblesGlow = Color3.fromRGB(0, 150, 255), -- Blue bubbles color
+		HeartsGlow = Color3.fromRGB(255, 100, 150), -- Pink hearts color
+		GhostsGlow = Color3.fromRGB(150, 150, 255), -- Light blue ghosts color
+		DonatorGlow = Color3.fromRGB(255, 100, 200) -- Pink/purple for donators
+	},
+	HIGHLIGHT_SETTINGS = {
+		FillTransparency = 1,
+		OutlineTransparency = 0,
+		DepthMode = Enum.HighlightDepthMode.Occluded
+	}
+}
+
+-- Events
+local glowEvent = ReplicatedStorage:WaitForChild("GlowEvent")
+local glowStateRequest = ReplicatedStorage:WaitForChild("GlowStateRequest")
+
+-- State management
+local equippedGlows = {} -- [userId] = glowName
+local playerConnections = {} -- [player] = {connections}
+
+-- Utility Functions
+local function getGlowColor(glowName: string): Color3?
+	return GLOW_CONFIG.COLORS[glowName]
+end
+
+local function createHighlight(character: Model, color: Color3): Highlight
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "LeaderboardGlow"
+	highlight.FillTransparency = GLOW_CONFIG.HIGHLIGHT_SETTINGS.FillTransparency
+	highlight.OutlineTransparency = GLOW_CONFIG.HIGHLIGHT_SETTINGS.OutlineTransparency
+	highlight.OutlineColor = color
+	highlight.Adornee = character
+	highlight.DepthMode = GLOW_CONFIG.HIGHLIGHT_SETTINGS.DepthMode
+	highlight.Parent = character
+	return highlight
+end
+
+local function createParticleEffect(character: Model, color: Color3, glowName: string): ParticleEmitter?
+	local particleTemplate = ReplicatedStorage:FindFirstChild("GlowParticleTemplate")
+	local shadowTemplate = ReplicatedStorage:FindFirstChild("ShadowParticleTemplate")
+	local bubblesTemplate = ReplicatedStorage:FindFirstChild("BubblesParticleEmitter")
+	local heartsTemplate = ReplicatedStorage:FindFirstChild("HeartsParticleEmitter")
+	local ghostsTemplate = ReplicatedStorage:FindFirstChild("GhostsParticleEmitter")
+
+	if not character:FindFirstChild("HumanoidRootPart") then 
+		return nil 
+	end
+
+	local humanoidRootPart = character.HumanoidRootPart
+
+	-- Remove any existing particles first (extra safety)
+	local existingParticles = humanoidRootPart:FindFirstChild("LeaderboardParticles")
+	if existingParticles then
+		existingParticles:Destroy()
+	end
+
+	-- Choose the appropriate particle template based on glow type
+	local templateToUse = particleTemplate
+	if glowName == "ShadowGlow" and shadowTemplate then
+		templateToUse = shadowTemplate
+	elseif glowName == "BubblesGlow" and bubblesTemplate then
+		templateToUse = bubblesTemplate
+	elseif glowName == "HeartsGlow" and heartsTemplate then
+		templateToUse = heartsTemplate
+	elseif glowName == "GhostsGlow" and ghostsTemplate then
+		templateToUse = ghostsTemplate
+	end
+
+	if not templateToUse then return nil end
+
+	local particleClone = templateToUse:Clone()
+	particleClone.Name = "LeaderboardParticles"
+
+	-- Only set color if it's not a special particle effect (these use their own particle settings)
+	if glowName ~= "ShadowGlow" and glowName ~= "BubblesGlow" and glowName ~= "HeartsGlow" and glowName ~= "GhostsGlow" then
+		particleClone.Color = ColorSequence.new(color)
+	end
+
+	particleClone.Enabled = true
+	particleClone.Parent = humanoidRootPart
+	return particleClone
+end
+
+-- Visual Effects
+local function removeGlow(character: Model)
+	if not character then return end
+
+	-- Remove highlight
+	local existingGlow = character:FindFirstChild("LeaderboardGlow")
+	if existingGlow then existingGlow:Destroy() end
+
+	-- Remove particles
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	if humanoidRootPart then
+		local existingParticle = humanoidRootPart:FindFirstChild("LeaderboardParticles")
+		if existingParticle then existingParticle:Destroy() end
+	end
+end
+
+local function applyGlow(character: Model, glowName: string)
+	if not character or not glowName then return end
+
+	local color = getGlowColor(glowName)
+	if not color then 
+		warn("Unknown glow name:", glowName)
+		return 
+	end
+
+	-- Remove existing glow (both highlight and particles)
+	removeGlow(character)
+
+	-- Create new highlight
+	createHighlight(character, color)
+
+	-- Attach particle effect
+	createParticleEffect(character, color, glowName)
+end
+
+-- Player Management
+local function setupInventoryWatch(player: Player)
+	local inventory = player:WaitForChild("Inventory", 5)
+	if not inventory then return end
+
+	local equippedGlow = inventory:WaitForChild("EquippedGlow", 5)
+	if not equippedGlow then return end
+
+	-- Store connection for cleanup
+	if not playerConnections[player] then
+		playerConnections[player] = {}
+	end
+
+	local connection = equippedGlow.Changed:Connect(function(newValue)
+		if player.Character then
+			if newValue and newValue ~= "" then
+				applyGlow(player.Character, newValue)
+			else
+				removeGlow(player.Character)
+			end
+		end
+	end)
+
+	table.insert(playerConnections[player], connection)
+end
+
+local function setupCharacterGlowHandling(player: Player)
+	local function onCharacterAdded(character: Model)
+		-- Wait for inventory to load
+		local inventory = player:WaitForChild("Inventory", 5)
+		if not inventory then return end
+
+		local equipped = inventory:FindFirstChild("EquippedGlow")
+		if equipped and equipped.Value ~= "" then
+			applyGlow(character, equipped.Value)
+		end
+	end
+
+	-- Store connection for cleanup
+	if not playerConnections[player] then
+		playerConnections[player] = {}
+	end
+
+	local connection = player.CharacterAdded:Connect(onCharacterAdded)
+	table.insert(playerConnections[player], connection)
+
+	-- Handle existing character
+	if player.Character then
+		onCharacterAdded(player.Character)
+	end
+end
+
+local function cleanupPlayerConnections(player: Player)
+	local connections = playerConnections[player]
+	if connections then
+		for _, connection in ipairs(connections) do
+			if connection.Connected then
+				connection:Disconnect()
+			end
+		end
+		playerConnections[player] = nil
+	end
+	equippedGlows[player.UserId] = nil
+end
+
+-- Event Handlers
+glowEvent.OnClientEvent:Connect(function(userId: number, glowName: string?)
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.UserId == userId then
+			equippedGlows[userId] = glowName
+			local character = player.Character
+			if character then
+				if glowName then
+					applyGlow(character, glowName)
+				else
+					removeGlow(character)
+				end
+			end
+			break
+		end
+	end
+end)
+
+-- Initialize for existing players
+for _, player in ipairs(Players:GetPlayers()) do
+	setupInventoryWatch(player)
+	setupCharacterGlowHandling(player)
+end
+
+-- Handle new players
+Players.PlayerAdded:Connect(function(player: Player)
+	setupInventoryWatch(player)
+	setupCharacterGlowHandling(player)
+end)
+
+-- Handle player leaving
+Players.PlayerRemoving:Connect(cleanupPlayerConnections)
+
+-- Request initial glow state
+local function requestInitialGlowState()
+	local success, initialState = pcall(function()
+		return glowStateRequest:InvokeServer()
+	end)
+
+	if not success then
+		warn("Failed to get initial glow state")
+		return
+	end
+
+	for userId, glowName in pairs(initialState) do
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player.UserId == tonumber(userId) then
+				local character = player.Character
+				if character then
+					applyGlow(character, glowName)
+				else
+					-- Wait for character to load
+					player.CharacterAdded:Wait()
+					applyGlow(player.Character, glowName)
+				end
+				break
+			end
+		end
+	end
+end
+
+-- Request initial state after a short delay to ensure everything is loaded
+task.defer(requestInitialGlowState)
+

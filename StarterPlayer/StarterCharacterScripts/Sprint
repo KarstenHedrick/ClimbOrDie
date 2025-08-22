@@ -1,0 +1,63 @@
+local player = game.Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local walkSpeed = 18
+local sprintSpeed = 24
+local currentHumanoid = nil
+
+-- Detect if on mobile
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+local function onCharacterAdded(char)
+	local humanoid = char:WaitForChild("Humanoid")
+	currentHumanoid = humanoid
+
+	-- Prevent jump delay after landing
+	humanoid.StateChanged:Connect(function(old, new)
+		if new == Enum.HumanoidStateType.Landed then
+			-- Wait one frame to avoid trampoline interference
+			task.wait() -- small delay to let other forces apply
+			if humanoid.MoveDirection.Magnitude > 0 then
+				humanoid:ChangeState(Enum.HumanoidStateType.Running)
+			end
+		end
+	end)
+
+	humanoid.WalkSpeed = walkSpeed
+end
+
+-- Handle respawning
+if player.Character then
+	onCharacterAdded(player.Character)
+end
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-- PC Sprint: LeftShift
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.LeftShift and currentHumanoid then
+		currentHumanoid.WalkSpeed = sprintSpeed
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if input.KeyCode == Enum.KeyCode.LeftShift and currentHumanoid then
+		currentHumanoid.WalkSpeed = walkSpeed
+	end
+end)
+
+-- Mobile Sprint: Only if joystick is pushed 90% or more
+if isMobile then
+	RunService.Heartbeat:Connect(function()
+		if currentHumanoid then
+			local mag = currentHumanoid.MoveDirection.Magnitude
+			if mag >= 0.95 then
+				currentHumanoid.WalkSpeed = sprintSpeed
+			else
+				currentHumanoid.WalkSpeed = walkSpeed
+			end
+		end
+	end)
+end
+

@@ -1,0 +1,15 @@
+local equipmentButton = script.Parent:WaitForChild("EquipmentButton")
+local equipmentMenu = script.Parent:WaitForChild("EquipmentMenu")
+
+-- Reference Shop GUI
+local shopMenu = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+	:WaitForChild("ShopGui")
+	:WaitForChild("ShopMenu")
+
+equipmentMenu.Visible = false
+
+equipmentButton.MouseButton1Click:Connect(function()
+	local shouldShow = not equipmentMenu.Visible
+	equipmentMenu.Visible = shouldShow
+	shopMenu.Visible = false
+end)

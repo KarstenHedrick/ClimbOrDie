@@ -1,0 +1,307 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Services
+local GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+local VotingService = require(script.Parent:WaitForChild("VotingService"))
+local SpectateService = require(script.Parent:WaitForChild("SpectateService"))
+local UIService = require(script.Parent:WaitForChild("UIService"))
+local TimerZoneService = require(script.Parent:WaitForChild("TimerZoneService"))
+
+local gameEndedEvent = ReplicatedStorage:FindFirstChild("GameEndedEvent")
+
+local GameFlowService = {}
+local state = GameStateService.GetState()
+
+-- Fully resets game state and UI after all players have died or game is over
+function GameFlowService.EndGameHardReset(mapModel)
+	-- Stop periodic game end check
+	GameFlowService.StopPeriodicGameEndCheck()
+
+	UIService.SendMessageAll("All players have died. Resetting game...")
+
+	-- Clean up TimerZoneService before destroying map
+	TimerZoneService.CleanupZoneDetection()
+
+	if mapModel and mapModel.Parent then
+		mapModel:Destroy()
+	end
+
+	GameStateService.ResetAll()
+	SpectateService.SetGameActive(false)
+	UIService.ShowLobbyUIForAll()
+	SpectateService.HideSpectateUIForAll()
+
+	-- Switch back to lobby music
+	local MusicService = require(script.Parent:WaitForChild("MusicService"))
+	MusicService.PlayLobbyMusic()
+end
+
+-- FIXED: Enhanced game end check that properly handles all player states
+function GameFlowService.CheckIfGameShouldEnd(mapClone)
+	print("=== GAME END CHECK CALLED ===")
+
+	-- Clean up any disconnected players first
+	GameFlowService.CleanupDisconnectedPlayers()
+
+	-- Debug: Print all current state
+	print("ALIVE PLAYERS:")
+	for player, _ in pairs(state.alivePlayers) do
+		print("  - " .. player.Name)
+	end
+
+	print("DEAD PLAYERS:")
+	for player, _ in pairs(state.deadPlayers) do
+		print("  - " .. player.Name)
+	end
+
+	print("FINISHED PLAYERS:")
+	for player, _ in pairs(state.finishedPlayers) do
+		print("  - " .. player.Name)
+	end
+
+	-- Count all players participating in the game (alive, dead, or finished)
+	local totalGamePlayers = 0
+	local aliveCount = 0
+
+	-- Count from all game state tables
+	local countedPlayers = {}
+
+	for player, _ in pairs(state.alivePlayers) do
+		if not countedPlayers[player] then
+			countedPlayers[player] = true
+			totalGamePlayers = totalGamePlayers + 1
+			aliveCount = aliveCount + 1
+		end
+	end
+
+	for player, _ in pairs(state.deadPlayers) do
+		if not countedPlayers[player] then
+			countedPlayers[player] = true
+			totalGamePlayers = totalGamePlayers + 1
+		end
+	end
+
+	for player, _ in pairs(state.finishedPlayers) do
+		if not countedPlayers[player] then
+			countedPlayers[player] = true
+			totalGamePlayers = totalGamePlayers + 1
+		end
+	end
+
+	print("TOTALS - Game players:", totalGamePlayers, "Alive:", aliveCount)
+	print("Game in progress:", GameStateService.IsGameInProgress())
+
+	-- ENHANCED GAME END CONDITIONS:
+	-- 1. No alive players and there were players in the game
+	-- 2. All remaining players are either dead or finished
+	-- 3. Game is actually in progress
+	local shouldEndGame = false
+	local endReason = ""
+
+	if aliveCount == 0 and totalGamePlayers > 0 and GameStateService.IsGameInProgress() then
+		shouldEndGame = true
+		endReason = "No alive players remaining"
+	elseif totalGamePlayers > 0 and GameStateService.IsGameInProgress() then
+		-- Check if all remaining players are either dead or finished
+		local allPlayersAccountedFor = true
+		for player, _ in pairs(countedPlayers) do
+			if player and player.Parent then
+				local isAlive = state.alivePlayers[player] == true
+				local isDead = state.deadPlayers[player] == true
+				local isFinished = state.finishedPlayers[player] == true
+
+				if not (isAlive or isDead or isFinished) then
+					allPlayersAccountedFor = false
+					break
+				end
+			end
+		end
+
+		if allPlayersAccountedFor and aliveCount == 0 then
+			shouldEndGame = true
+			endReason = "All players have finished or died"
+		end
+	end
+
+	if shouldEndGame then
+		print("🎯 ENDING GAME - " .. endReason)
+
+		-- Stop periodic game end check immediately
+		GameFlowService.StopPeriodicGameEndCheck()
+
+		UIService.SendMessageAll("All players have finished or died. Returning to lobby...")
+
+		if gameEndedEvent then
+			gameEndedEvent:FireAllClients()
+		end
+
+		-- Force UI reset for all players (including late joiners)
+		for _, player in pairs(Players:GetPlayers()) do
+			-- Make sure they see the lobby UI
+			local showLobbyEvent = ReplicatedStorage:FindFirstChild("ShowLobbyUIEvent")
+			if showLobbyEvent then
+				showLobbyEvent:FireClient(player)
+				print("Sent ShowLobbyUIEvent to", player.Name)
+			end
+
+			-- Reset any player-specific state
+			player:SetAttribute("HasJoinedCurrentGame", false)
+		end
+
+		-- SpectateService will handle spectate UI updates automatically
+
+		-- IMMEDIATE game end - no delay to prevent race conditions
+		print("🔄 Starting hard reset after game end")
+
+		-- Stop gas manager first
+		local GasManagerService = require(script.Parent:WaitForChild("GasManagerService"))
+		GasManagerService.Stop()
+
+		-- Clean up TimerZoneService before destroying map
+		TimerZoneService.CleanupZoneDetection()
+
+		if mapClone and mapClone.Parent then
+			print("Destroying map:", mapClone.Name)
+			mapClone:Destroy()
+		end
+
+		-- Reset game state
+		GameStateService.ResetAll()
+		SpectateService.SetGameActive(false)
+
+		-- Update UIs
+		UIService.ShowLobbyUIForAll()
+		SpectateService.HideSpectateUIForAll()
+
+		-- Ensure voting UI is hidden for all players
+		for _, player in ipairs(Players:GetPlayers()) do
+			local showVotingEvent = ReplicatedStorage:FindFirstChild("ShowVotingGuiEvent")
+			if showVotingEvent then
+				showVotingEvent:FireClient(player, false)
+			end
+		end
+
+		-- Reset voting service
+		local VotingService = require(script.Parent:WaitForChild("VotingService"))
+		VotingService.Reset()
+
+		-- Switch back to lobby music
+		local MusicService = require(script.Parent:WaitForChild("MusicService"))
+		MusicService.PlayLobbyMusic()
+
+		print("🔄 Hard reset complete")
+	else
+		print("Game continues - Alive players remain or no game in progress")
+	end
+
+	print("=== END GAME CHECK ===")
+end
+
+-- NEW: Dedicated function to clean up disconnected players
+function GameFlowService.CleanupDisconnectedPlayers()
+	local playersToRemove = {}
+
+	-- Find disconnected players in alive players
+	for player, _ in pairs(state.alivePlayers) do
+		if not player or not player.Parent then
+			table.insert(playersToRemove, {player = player, state = "alive"})
+		end
+	end
+
+	-- Find disconnected players in dead players
+	for player, _ in pairs(state.deadPlayers) do
+		if not player or not player.Parent then
+			table.insert(playersToRemove, {player = player, state = "dead"})
+		end
+	end
+
+	-- Find disconnected players in finished players
+	for player, _ in pairs(state.finishedPlayers) do
+		if not player or not player.Parent then
+			table.insert(playersToRemove, {player = player, state = "finished"})
+		end
+	end
+
+	-- Remove disconnected players
+	for _, data in ipairs(playersToRemove) do
+		local player = data.player
+		local playerState = data.state
+
+		if playerState == "alive" then
+			state.alivePlayers[player] = nil
+		elseif playerState == "dead" then
+			state.deadPlayers[player] = nil
+		elseif playerState == "finished" then
+			state.finishedPlayers[player] = nil
+		end
+
+		print("Removed disconnected " .. playerState .. " player:", tostring(player))
+	end
+end
+
+-- NEW: Handle player leaving during game
+function GameFlowService.OnPlayerLeft(player)
+	print("🔄 Player left during game:", player.Name)
+
+	-- Clean up player from all state tables
+	GameStateService.RemovePlayerCompletely(player)
+
+	-- Check if game should end after player leaves
+	if GameStateService.IsGameInProgress() then
+		local currentMap = GameStateService.GetCurrentMap()
+		if currentMap then
+			-- Use task.defer to ensure this runs after the current event
+			task.defer(function()
+				GameFlowService.CheckIfGameShouldEnd(currentMap)
+			end)
+		end
+	end
+end
+
+-- NEW: Periodic game end check to catch edge cases
+local periodicCheckThread = nil
+
+function GameFlowService.StartPeriodicGameEndCheck()
+	-- Stop any existing periodic check
+	if periodicCheckThread then
+		task.cancel(periodicCheckThread)
+	end
+
+	-- Start new periodic check
+	periodicCheckThread = task.spawn(function()
+		while true do
+			task.wait(5) -- Check every 5 seconds
+
+			-- Only run periodic check if game is in progress
+			if GameStateService.IsGameInProgress() then
+				local currentMap = GameStateService.GetCurrentMap()
+				if currentMap then
+					print("🔄 Periodic game end check running...")
+					GameFlowService.CheckIfGameShouldEnd(currentMap)
+				end
+			else
+				-- Game not in progress, stop periodic check
+				break
+			end
+		end
+	end)
+
+	print("🔄 Started periodic game end check")
+end
+
+function GameFlowService.StopPeriodicGameEndCheck()
+	if periodicCheckThread then
+		task.cancel(periodicCheckThread)
+		periodicCheckThread = nil
+		print("🔄 Stopped periodic game end check")
+	end
+end
+
+-- NEW: Initialize the service
+function GameFlowService.Init()
+	-- Start periodic game end check when service initializes
+	GameFlowService.StartPeriodicGameEndCheck()
+end
+
+return GameFlowService

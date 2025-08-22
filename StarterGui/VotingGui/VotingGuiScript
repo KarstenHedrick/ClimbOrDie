@@ -1,0 +1,106 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+
+local voteEvent = ReplicatedStorage:WaitForChild("MapVoteEvent")
+local showVotingGuiEvent = ReplicatedStorage:WaitForChild("ShowVotingGuiEvent")
+local votingCountdownEvent = ReplicatedStorage:WaitForChild("VotingCountdownEvent")
+local voteUpdateEvent = ReplicatedStorage:WaitForChild("VoteUpdateEvent")
+local readyEvent = ReplicatedStorage:WaitForChild("PlayerReadyEvent")
+
+local screenGui = script.Parent
+local mapVoteFrame = screenGui:WaitForChild("MapVoteFrame")
+local mapVoteBackground = mapVoteFrame:WaitForChild("MapVoteBackground")
+local countdownLabel = mapVoteFrame:WaitForChild("MatchCountdownLabel")
+
+screenGui.Enabled = false
+countdownLabel.Text = ""
+
+local player = Players.LocalPlayer
+local currentVote = nil
+local isReady = false
+
+-- 🟩 Reset all buttons' checkmarks
+local function resetCheckmarks()
+	for _, button in pairs(mapVoteBackground:GetChildren()) do
+		if button:IsA("ImageButton") then
+			local check = button:FindFirstChild("Checkmark")
+			if check then check.Visible = false end
+		end
+	end
+end
+
+-- 🟨 Handle vote UI update
+local function handleVoteUIUpdate(voteTable)
+	for mapName, count in pairs(voteTable) do
+		local button = mapVoteBackground:FindFirstChild(mapName)
+		if button then
+			local countLabel = button:FindFirstChild("VoteCountLabel")
+			if countLabel then
+				countLabel.Text = tostring(count)
+				countLabel.Visible = count > 0
+			end
+		end
+	end
+end
+
+-- Track ready state
+readyEvent.OnClientEvent:Connect(function(ready)
+	isReady = ready
+	if not ready then
+		resetCheckmarks()
+		currentVote = nil
+	end
+end)
+
+-- Listen for vote feedback
+ReplicatedStorage:WaitForChild("VoteFeedbackEvent").OnClientEvent:Connect(function(message)
+	-- Show error message to player
+	StarterGui:SetCore("SendNotification", {
+		Title = "Voting Error",
+		Text = message,
+		Duration = 3
+	})
+end)
+
+-- 🟩 Show/Hide Voting UI
+showVotingGuiEvent.OnClientEvent:Connect(function(shouldShow)
+	screenGui.Enabled = shouldShow
+	if not shouldShow then
+		countdownLabel.Text = ""
+		currentVote = nil
+		resetCheckmarks()
+	end
+end)
+
+-- ⏱ Countdown display
+votingCountdownEvent.OnClientEvent:Connect(function(secondsLeft)
+	countdownLabel.Text = secondsLeft
+end)
+
+-- 🔁 Real-time vote count updates
+voteUpdateEvent.OnClientEvent:Connect(handleVoteUIUpdate)
+
+-- 🗳 Vote click
+for _, button in pairs(mapVoteBackground:GetChildren()) do
+	if button:IsA("ImageButton") then
+		button.MouseButton1Click:Connect(function()
+			if not isReady then
+				StarterGui:SetCore("SendNotification", {
+					Title = "Voting Error",
+					Text = "You must be ready to vote!",
+					Duration = 3
+				})
+				return
+			end
+
+			local mapName = button.Name
+			voteEvent:FireServer(mapName)
+			currentVote = mapName
+			resetCheckmarks()
+
+			local check = button:FindFirstChild("Checkmark")
+			if check then check.Visible = true end
+		end)
+	end
+end

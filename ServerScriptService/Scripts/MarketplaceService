@@ -1,0 +1,134 @@
+local MarketplaceService = game:GetService("MarketplaceService")
+local DevProductMap = require(game.ServerScriptService.Modules:WaitForChild("DevProductMap"))
+local Players = game:GetService("Players")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RefreshUpgradeGuiEvent = ReplicatedStorage:WaitForChild("RefreshUpgradeGuiEvent")
+
+local folderMap = {
+	PowerUp = "OwnedPowerUps",
+	Emote = "OwnedEmotes",
+	Upgrade = "OwnedUpgrades",
+	Glow = "OwnedGlows"
+}
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+	local player = Players:GetPlayerByUserId(userId)
+	if not player then return end
+
+	if not wasPurchased then
+		player:SetAttribute("PendingProduct", nil)
+		player:SetAttribute("PendingCategory", nil)
+	end
+end)
+
+MarketplaceService.ProcessReceipt = function(receiptInfo)
+	local player = game:GetService("Players"):GetPlayerByUserId(receiptInfo.PlayerId)
+	if not player then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	-- 🟩 Handle Donate 50 Robux (always grant it, no item stored)
+	if receiptInfo.ProductId == 3345041560 then
+		local stats = player:FindFirstChild("leaderstats")
+		if stats then
+			local donated = stats:FindFirstChild("TotalDonated")
+			if donated then
+				donated.Value += 50
+			end
+		end
+
+		-- Give DonatorGlow to anyone who donates as a thank you
+		local inventory = player:FindFirstChild("Inventory")
+		if inventory then
+			local ownedGlows = inventory:FindFirstChild("OwnedGlows")
+			if ownedGlows and not ownedGlows:FindFirstChild("DonatorGlow") then
+				local donatorGlow = Instance.new("StringValue")
+				donatorGlow.Name = "DonatorGlow"
+				donatorGlow.Parent = ownedGlows
+
+				-- Auto-equip the DonatorGlow as a thank you
+				local equippedGlow = inventory:FindFirstChild("EquippedGlow")
+				if equippedGlow then
+					equippedGlow.Value = "DonatorGlow"
+					-- Fire the set equipped event
+					local setEquippedEvent = ReplicatedStorage:FindFirstChild("SetEquippedItemEvent")
+					if setEquippedEvent then
+						setEquippedEvent:FireServer("EquippedGlow", "DonatorGlow")
+					end
+				end
+
+				-- Refresh the glow inventory
+				local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshInventoryEvent")
+				if refreshEvent then
+					refreshEvent:FireClient(player, "Glow")
+				end
+
+				print("Gave DonatorGlow to " .. player.Name .. " as a thank you for donating!")
+			end
+		end
+
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+
+	-- 🟨 Normal dev product logic
+	local purchasedTitle = player:GetAttribute("PendingProduct")
+	local purchasedCategory = player:GetAttribute("PendingCategory")
+
+	if not purchasedTitle or receiptInfo.ProductId ~= DevProductMap[purchasedTitle] then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local inventory = player:FindFirstChild("Inventory")
+	if not inventory then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local folderName = folderMap[purchasedCategory or "Upgrade"] or "OwnedUpgrades"
+	local categoryFolder = inventory:FindFirstChild(folderName)
+	if not categoryFolder then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	if not categoryFolder:FindFirstChild(purchasedTitle) then
+		local item = Instance.new("StringValue")
+		item.Name = purchasedTitle
+		item.Value = purchasedTitle
+		item.Parent = categoryFolder
+
+		-- Auto-equip the newly purchased item
+		local equippedMap = {
+			PowerUp = "EquippedPowerUp",
+			Emote = "EquippedEmote",
+			Upgrade = "EquippedUpgrade",
+			Glow = "EquippedGlow"
+		}
+		local equippedValue = inventory:FindFirstChild(equippedMap[purchasedCategory])
+		if equippedValue then
+			equippedValue.Value = purchasedTitle
+			-- Fire the set equipped event
+			local setEquippedEvent = ReplicatedStorage:FindFirstChild("SetEquippedItemEvent")
+			if setEquippedEvent then
+				setEquippedEvent:FireServer(equippedMap[purchasedCategory], purchasedTitle)
+			end
+		end
+
+		-- Fire refresh event if it's an Upgrade
+		if purchasedCategory == "Upgrade" then
+			RefreshUpgradeGuiEvent:FireClient(player)
+		end
+
+		-- Fire refresh event for the category
+		local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshInventoryEvent")
+		if refreshEvent then
+			refreshEvent:FireClient(player, purchasedCategory)
+		end
+	end
+
+
+	-- Clean up attributes
+	player:SetAttribute("PendingProduct", nil)
+	player:SetAttribute("PendingCategory", nil)
+
+	return Enum.ProductPurchaseDecision.PurchaseGranted
+end

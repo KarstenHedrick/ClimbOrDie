@@ -1,0 +1,25 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = game:GetService("Players").LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Hide Events
+ReplicatedStorage:WaitForChild("HideGoldGuiEvent").OnClientEvent:Connect(function()
+	local gui = playerGui:FindFirstChild("GoldGui")
+	if gui then gui.Enabled = false end
+end)
+
+ReplicatedStorage:WaitForChild("HideWinGuiEvent").OnClientEvent:Connect(function()
+	local gui = playerGui:FindFirstChild("WinGui")
+	if gui then gui.Enabled = false end
+end)
+
+-- Show Events
+ReplicatedStorage:WaitForChild("ShowGoldGuiEvent").OnClientEvent:Connect(function()
+	local gui = playerGui:FindFirstChild("GoldGui")
+	if gui then gui.Enabled = true end
+end)
+
+ReplicatedStorage:WaitForChild("ShowWinGuiEvent").OnClientEvent:Connect(function()
+	local gui = playerGui:FindFirstChild("WinGui")
+	if gui then gui.Enabled = true end
+end)

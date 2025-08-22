@@ -1,0 +1,68 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ShopItemData = require(ReplicatedStorage:WaitForChild("ShopItemData"))
+local refreshUpgradeGuiEvent = ReplicatedStorage:WaitForChild("RefreshUpgradeGuiEvent")
+local hideUpgradesGuiEvent = ReplicatedStorage:WaitForChild("HideUpgradesGuiEvent")
+local showUpgradesGuiEvent = ReplicatedStorage:WaitForChild("ShowUpgradesGuiEvent")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local upgradesGui = playerGui:WaitForChild("UpgradesGui")
+local upgradeBar = upgradesGui:WaitForChild("UpgradeBar")
+local template = upgradeBar:WaitForChild("UpgradeTemplate")
+
+local function renderOwnedUpgrades()
+	-- Clear previous icons
+	for _, child in ipairs(upgradeBar:GetChildren()) do
+		if child:IsA("ImageLabel") and child ~= template then
+			child:Destroy()
+		end
+	end
+
+	local inventory = player:FindFirstChild("Inventory")
+	if not inventory then return end
+
+	local upgradesFolder = inventory:FindFirstChild("OwnedUpgrades")
+	if not upgradesFolder then return end
+
+	for _, upgrade in ipairs(upgradesFolder:GetChildren()) do
+		local upgradeName = upgrade.Name
+		local upgradeData = ShopItemData.Upgrade[upgradeName]
+
+		if upgradeData and upgradeData.UpgradeBarIcon then
+			local icon = template:Clone()
+			icon.Name = upgradeName
+			icon.Image = upgradeData.UpgradeBarIcon
+			icon.Visible = true
+			icon.Size = UDim2.new(0, 60, 0, 60)
+			icon.ImageTransparency = 0
+			icon.Parent = upgradeBar
+		end
+	end
+end
+
+refreshUpgradeGuiEvent.OnClientEvent:Connect(function()
+	renderOwnedUpgrades()
+end)
+
+-- Auto-update on spawn
+player.CharacterAdded:Connect(function()
+	task.wait(1)
+	renderOwnedUpgrades()
+end)
+
+-- Initial render
+task.wait(1)
+renderOwnedUpgrades()
+
+-- Handle spectate-related hiding/showing
+hideUpgradesGuiEvent.OnClientEvent:Connect(function()
+	print("HideUpgradesGuiEvent received - hiding upgrades bar")
+	upgradeBar.Visible = false
+end)
+
+showUpgradesGuiEvent.OnClientEvent:Connect(function()
+	print("ShowUpgradesGuiEvent received - showing upgrades bar")
+	upgradeBar.Visible = true
+end)

@@ -1,0 +1,139 @@
+-- 📍 ServerScriptService > ZoneHandler
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIService = require(game.ServerScriptService.Services:WaitForChild("UIService"))
+local PurchaseService = require(game.ServerScriptService.Services:WaitForChild("PurchaseService"))
+
+-- Zone parts
+local shopZone = workspace:WaitForChild("ShopTriggerZone"):WaitForChild("ShopZone")
+local equipZone = workspace:WaitForChild("EquipTriggerZone"):WaitForChild("EquipZone")
+local donateZone = workspace:WaitForChild("DonateTriggerZone"):WaitForChild("DonateZone")
+local shadowGlowZone = workspace:WaitForChild("ShadowGlowTriggerZone"):WaitForChild("ShadowGlowZone")
+local bubblesGlowZone = workspace:WaitForChild("BubblesGlowTriggerZone"):WaitForChild("BubblesGlowZone")
+local heartsGlowZone = workspace:WaitForChild("HeartsGlowTriggerZone"):WaitForChild("HeartsGlowZone")
+local ghostsGlowZone = workspace:WaitForChild("GhostsGlowTriggerZone"):WaitForChild("GhostsGlowZone")
+
+-- Zone entry state tracking
+local zoneStates = {} -- [player] = { shop = false, equip = false, donate = false, shadowGlow = false, bubblesGlow = false, heartsGlow = false, ghostsGlow = false }
+local lastDonationTime = {} -- [player] = timestamp
+local lastShadowGlowTime = {} -- [player] = timestamp
+local lastBubblesGlowTime = {} -- [player] = timestamp
+local lastHeartsGlowTime = {} -- [player] = timestamp
+local lastGhostsGlowTime = {} -- [player] = timestamp
+
+-- Simple distance check
+local function isInZone(zonePart, character)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+	local distance = (zonePart.Position - hrp.Position).Magnitude
+	return distance <= math.max(zonePart.Size.X, zonePart.Size.Z) / 2
+end
+
+-- Zone entry handler
+local function handleZone(player, character, zonePart, zoneKey, actionFunction)
+	local wasInZone = zoneStates[player] and zoneStates[player][zoneKey]
+	local nowInZone = isInZone(zonePart, character)
+
+	if not zoneStates[player] then
+		zoneStates[player] = {}
+	end
+
+	if nowInZone and not wasInZone then
+		actionFunction(player)
+	end
+
+	zoneStates[player][zoneKey] = nowInZone
+end
+
+-- Cleanup
+Players.PlayerRemoving:Connect(function(player)
+	zoneStates[player] = nil
+	lastDonationTime[player] = nil
+	lastShadowGlowTime[player] = nil
+	lastBubblesGlowTime[player] = nil
+	lastHeartsGlowTime[player] = nil
+	lastGhostsGlowTime[player] = nil
+end)
+
+-- Per-frame zone checking
+RunService.Heartbeat:Connect(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		if not character then continue end
+
+		handleZone(player, character, shopZone, "shop", function(p)
+			UIService.ShowShopGui(p)
+		end)
+
+		handleZone(player, character, equipZone, "equip", function(p)
+			UIService.ShowEquipmentGui(p)
+		end)
+
+		handleZone(player, character, donateZone, "donate", function(p)
+			local now = tick()
+			if (now - (lastDonationTime[p] or 0)) < 5 then return end
+			lastDonationTime[p] = now
+
+			PurchaseService.TryPurchase(p, {
+				Title = "Donate 50 Robux",
+				Category = "Upgrade",
+				Price = 50,
+				Currency = "Robux"
+			})
+		end)
+
+		handleZone(player, character, shadowGlowZone, "shadowGlow", function(p)
+			local now = tick()
+			if (now - (lastShadowGlowTime[p] or 0)) < 5 then return end
+			lastShadowGlowTime[p] = now
+
+			PurchaseService.TryPurchase(p, {
+				Title = "ShadowGlow",
+				Category = "Glow",
+				Price = 200,
+				Currency = "Robux"
+			})
+		end)
+
+		handleZone(player, character, bubblesGlowZone, "bubblesGlow", function(p)
+			local now = tick()
+			if (now - (lastBubblesGlowTime[p] or 0)) < 5 then return end
+			lastBubblesGlowTime[p] = now
+
+			PurchaseService.TryPurchase(p, {
+				Title = "BubblesGlow",
+				Category = "Glow",
+				Price = 200,
+				Currency = "Robux"
+			})
+		end)
+
+		handleZone(player, character, heartsGlowZone, "heartsGlow", function(p)
+			local now = tick()
+			if (now - (lastHeartsGlowTime[p] or 0)) < 5 then return end
+			lastHeartsGlowTime[p] = now
+
+			PurchaseService.TryPurchase(p, {
+				Title = "HeartsGlow",
+				Category = "Glow",
+				Price = 200,
+				Currency = "Robux"
+			})
+		end)
+
+		handleZone(player, character, ghostsGlowZone, "ghostsGlow", function(p)
+			local now = tick()
+			if (now - (lastGhostsGlowTime[p] or 0)) < 5 then return end
+			lastGhostsGlowTime[p] = now
+
+			PurchaseService.TryPurchase(p, {
+				Title = "GhostsGlow",
+				Category = "Glow",
+				Price = 200,
+				Currency = "Robux"
+			})
+		end)
+	end
+end)
+

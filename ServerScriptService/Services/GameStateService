@@ -1,0 +1,366 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local GameStateService = {}
+
+-- Services
+local PlayerDataService = require(game.ServerScriptService.Services:WaitForChild("PlayerDataService"))
+local UIService = require(script.Parent:WaitForChild("UIService"))
+
+function GameStateService.CleanupPlayer(player)
+	-- Save data first
+	PlayerDataService.Save(player)
+
+	-- Clean up all states
+	GameStateService.RemovePlayerCompletely(player)
+
+	-- Clean up any visual effects/UI
+	local glowEvent = ReplicatedStorage:FindFirstChild("GlowUpdateEvent")
+	if glowEvent then
+		glowEvent:FireAllClients(player.UserId, nil)
+	end
+
+	-- Clean up UI elements
+	UIService.HideLobbyGUIsFor(player)
+
+	-- Fire cleanup event to all clients
+	local playerLeftEvent = ReplicatedStorage:FindFirstChild("PlayerLeftEvent")
+	if playerLeftEvent then
+		playerLeftEvent:FireAllClients(player)
+	end
+end
+
+local state = {
+	readyPlayers = {},
+	alivePlayers = {},
+	finishedPlayers = {},
+	secondChanceUsed = {},
+	highestY = {},
+	countdownStarted = false,
+	countdownDuration = 30,
+	isGameInProgress = false,
+	pendingCountdown = false,
+	deadPlayers = {},
+	currentMapModel = nil,
+	gasStartTime = nil,
+	joinableUntil = nil,
+	-- New: Track connections for cleanup
+	playerConnections = {},
+	mapConnections = {}
+}
+
+function GameStateService.GetState()
+	return state
+end
+
+function GameStateService.IsGameInProgress()
+	return state.isGameInProgress
+end
+
+function GameStateService.SetGameInProgress(value)
+	state.isGameInProgress = value
+end
+
+-- Improved: Clean up connections before reset
+-- Replace your GameStateService.ResetAll() function with this:
+function GameStateService.ResetAll()
+	print("🔄 Starting GameState Reset")
+
+	-- Disconnect all player connections
+	for player, connections in pairs(state.playerConnections) do
+		for _, connection in pairs(connections) do
+			if connection then
+				connection:Disconnect()
+			end
+		end
+	end
+
+	-- Disconnect all map connections
+	for _, connection in pairs(state.mapConnections) do
+		if connection then
+			connection:Disconnect()
+		end
+	end
+
+	-- Reset state
+	state.readyPlayers = {}
+	state.alivePlayers = {}
+
+	-- Clear finishedPlayers more thoroughly
+	for k in pairs(state.finishedPlayers) do
+		state.finishedPlayers[k] = nil
+	end
+
+	state.secondChanceUsed = {}
+	state.highestY = {}
+	state.countdownStarted = false
+	state.isGameInProgress = false
+	state.pendingCountdown = false
+	state.deadPlayers = {}
+	state.joinableUntil = nil
+	state.gasStartTime = nil
+	state.playerConnections = {}
+	state.mapConnections = {}
+
+	print("🔄 Cleared finishedPlayers table. Count before clear:", #state.finishedPlayers)
+
+	-- Reset player attributes for all players
+	for _, player in ipairs(Players:GetPlayers()) do
+		-- Clear checkpoint data
+		player:SetAttribute("LastCheckpointPosition", nil)
+		player:SetAttribute("LastCheckpointY", nil)
+		player:SetAttribute("StartTime", nil)
+		player:SetAttribute("HasJoinedCurrentGame", false)
+
+		local readyEvent = ReplicatedStorage:FindFirstChild("PlayerReadyEvent")
+		if readyEvent then
+			readyEvent:FireClient(player, false) -- Tell client they're not ready
+		end
+	end
+
+	-- Trigger any reset callbacks
+	if state.OnReset then
+		state.OnReset()
+	end
+
+	print("🔄 GameState Reset Complete")
+end
+
+function GameStateService.ResetReadyPlayers()
+	-- Clear the ready players table
+	for k in pairs(state.readyPlayers) do
+		state.readyPlayers[k] = nil
+	end
+
+	-- Notify all players they are no longer ready
+	for _, player in ipairs(Players:GetPlayers()) do
+		local readyEvent = ReplicatedStorage:FindFirstChild("PlayerReadyEvent")
+		if readyEvent then
+			readyEvent:FireClient(player, false)
+		end
+
+		-- Also hide voting UI
+		local showVotingEvent = ReplicatedStorage:FindFirstChild("ShowVotingGuiEvent")
+		if showVotingEvent then
+			showVotingEvent:FireClient(player, false)
+		end
+	end
+
+	print("Reset ready state for all players")
+end
+
+function GameStateService.SetCurrentMap(map)
+	state.currentMapModel = map
+end
+
+function GameStateService.GetCurrentMap()
+	return state.currentMapModel
+end
+
+function GameStateService.MarkPlayerAlive(player)
+	state.alivePlayers[player] = true
+	state.deadPlayers[player] = nil
+	state.finishedPlayers[player] = nil -- Clear finished state when player joins new game
+
+	-- Notify SpectateService about player joining game
+	local success, SpectateService = pcall(function()
+		return require(script.Parent:WaitForChild("SpectateService"))
+	end)
+
+	if success and SpectateService.OnPlayerJoinedGame then
+		SpectateService.OnPlayerJoinedGame(player)
+	end
+end
+
+function GameStateService.MarkPlayerDead(player)
+	if not player or not player.Parent then return end
+	if state.deadPlayers[player] then return end -- Already dead
+
+	state.alivePlayers[player] = nil
+	state.deadPlayers[player] = true
+	GameStateService.CleanupPlayerConnections(player)
+
+	-- Notify SpectateService about player death
+	local success, SpectateService = pcall(function()
+		return require(script.Parent:WaitForChild("SpectateService"))
+	end)
+
+	if success and SpectateService.OnPlayerDied then
+		SpectateService.OnPlayerDied(player)
+	end
+end
+
+function GameStateService.IsPlayerAlive(player)
+	return state.alivePlayers[player] == true
+end
+
+function GameStateService.GetAlivePlayers()
+	return state.alivePlayers
+end
+
+function GameStateService.GetDeadPlayers()
+	return state.deadPlayers
+end
+
+-- Mark a player as finished (completed the course)
+function GameStateService.MarkPlayerFinished(player)
+	state.alivePlayers[player] = nil
+	state.finishedPlayers[player] = true
+	-- Clean up player connections when they finish
+	GameStateService.CleanupPlayerConnections(player)
+
+	-- Notify SpectateService about player finished
+	local success, SpectateService = pcall(function()
+		return require(script.Parent:WaitForChild("SpectateService"))
+	end)
+
+	if success and SpectateService.OnPlayerFinished then
+		SpectateService.OnPlayerFinished(player)
+	end
+end
+
+function GameStateService.GetFinishedPlayers()
+	return state.finishedPlayers
+end
+
+-- Improved: Use consistent time function
+function GameStateService.SetGasStartTime(time)
+	state.gasStartTime = time
+end
+
+function GameStateService.GetGasStartTime()
+	return state.gasStartTime
+end
+
+function GameStateService.GetContext()
+	return state
+end
+
+-- New: Connection management functions
+function GameStateService.AddPlayerConnection(player, connectionName, connection)
+	if not state.playerConnections[player] then
+		state.playerConnections[player] = {}
+	end
+	state.playerConnections[player][connectionName] = connection
+end
+
+function GameStateService.AddMapConnection(connectionName, connection)
+	-- Ensure old connection is cleaned up
+	if state.mapConnections[connectionName] then
+		state.mapConnections[connectionName]:Disconnect()
+	end
+	state.mapConnections[connectionName] = connection
+end
+
+function GameStateService.CleanupPlayerConnections(player)
+	if state.playerConnections[player] then
+		for _, connection in pairs(state.playerConnections[player]) do
+			if connection then
+				connection:Disconnect()
+			end
+		end
+		state.playerConnections[player] = nil
+	end
+end
+
+-- New: Handle player leaving completely
+function GameStateService.RemovePlayerCompletely(player)
+	-- Remove from all game states
+	state.readyPlayers[player] = nil
+	state.alivePlayers[player] = nil
+	state.finishedPlayers[player] = nil
+	state.deadPlayers[player] = nil
+	state.secondChanceUsed[player] = nil
+	state.highestY[player] = nil
+
+	-- Clean up their connections
+	GameStateService.CleanupPlayerConnections(player)
+
+	print("Completely removed player from game state:", player.Name)
+end
+
+-- New: Safe time utilities
+function GameStateService.GetCurrentTime()
+	return os.time() -- Use os.time() consistently for network sync
+end
+
+function GameStateService.IsWithinJoinableWindow()
+	if not state.joinableUntil then return false end
+	return GameStateService.GetCurrentTime() < state.joinableUntil
+end
+
+function GameStateService.SetJoinableUntil(time)
+	state.joinableUntil = time
+end
+
+-- New: Get total count of players participating in the game
+function GameStateService.GetTotalGamePlayerCount()
+	local count = 0
+	local seenPlayers = {}
+
+	-- Count unique players across all game states
+	for player, _ in pairs(state.alivePlayers) do
+		if player and player.Parent and not seenPlayers[player] then
+			seenPlayers[player] = true
+			count = count + 1
+		end
+	end
+
+	for player, _ in pairs(state.deadPlayers) do
+		if player and player.Parent and not seenPlayers[player] then
+			seenPlayers[player] = true
+			count = count + 1
+		end
+	end
+
+	for player, _ in pairs(state.finishedPlayers) do
+		if player and player.Parent and not seenPlayers[player] then
+			seenPlayers[player] = true
+			count = count + 1
+		end
+	end
+
+	return count
+end
+
+-- Initialize the PlayerRemoving connection when the service loads
+Players.PlayerRemoving:Connect(function(player)
+	print("Player removing:", player.Name)
+	GameStateService.CleanupPlayer(player)
+
+	-- NEW: Check if countdown should be stopped when ready players leave
+	if state.readyPlayers[player] then
+		print("🚫 Ready player left during countdown:", player.Name)
+
+		-- Check if any ready players remain
+		local remainingReadyCount = 0
+		for _, _ in pairs(state.readyPlayers) do
+			remainingReadyCount += 1
+		end
+
+		-- If no ready players remain and countdown is active, stop it
+		if remainingReadyCount == 0 and state.countdownStarted then
+			print("🚫 No ready players remaining - stopping countdown")
+
+			-- Stop the voting countdown
+			local success, VotingService = pcall(function()
+				return require(script.Parent:WaitForChild("VotingService"))
+			end)
+
+			if success and VotingService.StopCountdown then
+				VotingService.StopCountdown()
+			end
+		end
+	end
+
+	-- If we have a GameFlowService, notify it
+	local success, GameFlowService = pcall(function()
+		return require(script.Parent:WaitForChild("GameFlowService"))
+	end)
+
+	if success and GameFlowService.OnPlayerLeft then
+		GameFlowService.OnPlayerLeft(player)
+	end
+end)
+
+return GameStateService

@@ -1,0 +1,566 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ShowSecondChanceUIEvent = ReplicatedStorage:WaitForChild("ShowSecondChanceUIEvent")
+
+local GasManagerService = {}
+
+local GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+local GameFlowService = require(script.Parent:WaitForChild("GameFlowService"))
+
+local gasThread = nil
+local gasBoostConnections = {} -- store boost event connections
+local gasTouchConnection = nil -- store gas touch connection
+local currentGasSpeed = 0.20
+local hasUpgrade
+local finishedPlayers
+local secondChanceUsed
+local gasStarted = false -- new flag
+local checkpointCooldowns = {} -- prevent rapid checkpoint teleportation
+
+-- Helper function to validate checkpoint data (does NOT deactivate checkpoints)
+local function validateCheckpointData(player)
+	local checkpointPos = player:GetAttribute("LastCheckpointPosition")
+	local checkpointY = player:GetAttribute("LastCheckpointY")
+
+	if checkpointPos and checkpointY then
+		-- Validate that checkpoint data is reasonable
+		if typeof(checkpointPos) == "Vector3" and typeof(checkpointY) == "number" then
+			if checkpointY > -1000 and checkpointY < 10000 then -- Reasonable Y bounds
+				-- CRITICAL FIX: Do NOT deactivate checkpoints during validation
+				-- Checkpoint deactivation happens separately to prevent race conditions
+				return true, checkpointPos, checkpointY
+			else
+				print("⚠️ Invalid checkpoint Y value for", player.Name, ":", checkpointY)
+				-- Clear invalid checkpoint data
+				player:SetAttribute("LastCheckpointPosition", nil)
+				player:SetAttribute("LastCheckpointY", nil)
+				return false, nil, nil
+			end
+		else
+			print("⚠️ Invalid checkpoint data types for", player.Name, "- Pos:", typeof(checkpointPos), "Y:", typeof(checkpointY))
+			-- Clear checkpoint data
+			player:SetAttribute("LastCheckpointPosition", nil)
+			player:SetAttribute("LastCheckpointY", nil)
+			return false, nil, nil
+		end
+	end
+
+	return false, nil, nil
+end
+
+-- NEW: Check if checkpoint is still valid (not expired by gas) without deactivating it
+local function isCheckpointStillValid(player)
+	local checkpointY = player:GetAttribute("LastCheckpointY")
+	if not checkpointY or typeof(checkpointY) ~= "number" then
+		return false
+	end
+
+	-- Check if gas has passed this checkpoint
+	local currentGas = GameStateService.GetCurrentMap() and GameStateService.GetCurrentMap():FindFirstChild("Gas", true)
+	if currentGas then
+		local gasY = currentGas.Position.Y
+		local gasHeight = currentGas.Size.Y
+		local gasTopY = gasY + (gasHeight / 2)
+
+		-- If gas has risen above the checkpoint, it's no longer valid
+		if gasTopY > checkpointY then
+			print("🚫 Checkpoint expired for", player.Name, "- Gas Y:", gasTopY, "Checkpoint Y:", checkpointY)
+			return false
+		end
+	end
+
+	return true
+end
+
+-- ENHANCED: Double-check checkpoint validity with additional safety measures
+local function isCheckpointFullyValid(player)
+	-- Basic checkpoint data validation
+	local checkpointPos = player:GetAttribute("LastCheckpointPosition")
+	local checkpointY = player:GetAttribute("LastCheckpointY")
+
+	if not checkpointPos or not checkpointY then
+		return false, nil, nil
+	end
+
+	-- Type validation
+	if typeof(checkpointPos) ~= "Vector3" or typeof(checkpointY) ~= "number" then
+		print("⚠️ Invalid checkpoint data types for", player.Name)
+		return false, nil, nil
+	end
+
+	-- Y bounds validation
+	if checkpointY < -1000 or checkpointY > 10000 then
+		print("⚠️ Checkpoint Y out of bounds for", player.Name, ":", checkpointY)
+		return false, nil, nil
+	end
+
+	-- Check if gas has passed this checkpoint
+	if not isCheckpointStillValid(player) then
+		return false, nil, nil
+	end
+
+	-- Final validation: ensure checkpoint position is reasonable
+	if checkpointPos.Magnitude > 10000 then
+		print("⚠️ Checkpoint position too far for", player.Name)
+		return false, nil, nil
+	end
+
+	return true, checkpointPos, checkpointY
+end
+
+-- NEW: Safely get checkpoint data without validation (for external use)
+function GasManagerService.GetPlayerCheckpoint(player)
+	local checkpointPos = player:GetAttribute("LastCheckpointPosition")
+	local checkpointY = player:GetAttribute("LastCheckpointY")
+
+	if checkpointPos and checkpointY and typeof(checkpointPos) == "Vector3" and typeof(checkpointY) == "number" then
+		-- Check if checkpoint is still valid (not expired by gas)
+		if isCheckpointStillValid(player) then
+			return checkpointPos, checkpointY
+		else
+			-- Checkpoint has expired - clear it
+			print("🚫 Clearing expired checkpoint for", player.Name)
+			player:SetAttribute("LastCheckpointPosition", nil)
+			player:SetAttribute("LastCheckpointY", nil)
+			return nil, nil
+		end
+	end
+
+	return nil, nil
+end
+
+-- NEW: Force clear a player's checkpoint (for admin use)
+function GasManagerService.ClearPlayerCheckpoint(player)
+	if player then
+		player:SetAttribute("LastCheckpointPosition", nil)
+		player:SetAttribute("LastCheckpointY", nil)
+		print("🗑️ Force cleared checkpoint for", player.Name)
+	end
+end
+
+-- NEW: Function to deactivate checkpoints for all players when gas passes them
+local function deactivateExpiredCheckpoints()
+	local currentMap = GameStateService.GetCurrentMap()
+	if not currentMap then return end
+
+	local gas = currentMap:FindFirstChild("Gas", true)
+	if not gas then return end
+
+	local gasY = gas.Position.Y
+	local gasHeight = gas.Size.Y
+	local gasTopY = gasY + (gasHeight / 2)
+
+	-- Check all players for expired checkpoints
+	for _, player in pairs(Players:GetPlayers()) do
+		local checkpointY = player:GetAttribute("LastCheckpointY")
+		if checkpointY and typeof(checkpointY) == "number" then
+			-- If gas has risen above the checkpoint, deactivate it
+			if gasTopY > checkpointY then
+				print("🚫 Deactivating expired checkpoint for", player.Name, "- Gas Y:", gasTopY, "Checkpoint Y:", checkpointY)
+				player:SetAttribute("LastCheckpointPosition", nil)
+				player:SetAttribute("LastCheckpointY", nil)
+
+				-- Notify client that checkpoint was deactivated
+				local checkpointDeactivatedEvent = ReplicatedStorage:FindFirstChild("CheckpointDeactivatedEvent")
+				if checkpointDeactivatedEvent then
+					checkpointDeactivatedEvent:FireClient(player)
+				end
+			end
+		end
+	end
+end
+
+-- Helper function to ensure lobby gas system is working
+local function ensureLobbyGasSystem()
+	-- Check if lobby gas exists and is working
+	local lobbyGas = workspace:FindFirstChild("SpawnLocation") and workspace.SpawnLocation:FindFirstChild("SpawnGas")
+	local lobbySpawn = workspace:FindFirstChild("SpawnLocation") and workspace.SpawnLocation:FindFirstChild("SpawnPoint") or workspace:FindFirstChild("SpawnLocation")
+
+	if not lobbyGas then
+		warn("⚠️ Lobby gas not found! Players in lobby may not be affected by gas.")
+		return false
+	end
+
+	if not lobbySpawn then
+		warn("⚠️ Lobby spawn not found! Lobby gas teleportation may not work properly.")
+		return false
+	end
+
+	print("✅ Lobby gas system verified and working")
+	return true
+end
+
+function GasManagerService.Init(deps)
+	hasUpgrade = deps.hasUpgrade
+	finishedPlayers = deps.finishedPlayers
+	secondChanceUsed = deps.secondChanceUsed
+
+	-- Reset state on init
+	GasManagerService.Stop()
+
+	-- Verify lobby gas system is working
+	ensureLobbyGasSystem()
+
+	-- Periodic lobby gas system check
+	task.spawn(function()
+		while true do
+			task.wait(30) -- Check every 30 seconds
+			local isWorking = ensureLobbyGasSystem()
+			if not isWorking then
+				warn("⚠️ Lobby gas system check failed - attempting to reinitialize...")
+				-- Could add reinitialization logic here if needed
+			end
+		end
+	end)
+
+	-- Clean up on game reset
+	local GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+	GameStateService.GetState().OnReset = function()
+		-- Only stop gas when it's a full game reset (no alive players)
+		local context = GameStateService.GetContext()
+		if not context or not context.alivePlayers or next(context.alivePlayers) == nil then
+			GasManagerService.Stop()
+		end
+	end
+end
+
+function GasManagerService.GetCurrentSpeed()
+	return currentGasSpeed
+end
+
+-- NEW: Get current gas position
+function GasManagerService.GetCurrentGasPosition()
+	local currentMap = GameStateService.GetCurrentMap()
+	if not currentMap then return nil end
+
+	local gas = currentMap:FindFirstChild("Gas", true)
+	if not gas then return nil end
+
+	return gas.Position, gas.Size
+end
+
+-- NEW: Check if a specific Y position is below the gas
+function GasManagerService.IsPositionBelowGas(yPosition)
+	local currentMap = GameStateService.GetCurrentMap()
+	if not currentMap then return false end
+
+	local gas = currentMap:FindFirstChild("Gas", true)
+	if not gas then return false end
+
+	local gasY = gas.Position.Y
+	local gasHeight = gas.Size.Y
+	local gasTopY = gasY + (gasHeight / 2)
+
+	return yPosition < gasTopY
+end
+
+-- Set up boost zones (can be called before gas starts)
+function GasManagerService.SetupBoostZones(mapModel)
+	-- Clean up any existing boost connections
+	for _, conn in ipairs(gasBoostConnections) do
+		if conn and typeof(conn) == "RBXScriptConnection" then
+			conn:Disconnect()
+		end
+	end
+	gasBoostConnections = {}
+
+	-- Set up boost zones
+	local checkpoints = mapModel:FindFirstChild("Checkpoints", true)
+	if checkpoints then
+		for _, zone in ipairs(checkpoints:GetDescendants()) do
+			if zone:IsA("BasePart") and zone.Name == "GasBoostZone" then
+				local triggered = false
+				local connection = zone.Touched:Connect(function(hit)
+					if triggered then return end
+					local char = hit.Parent
+					local player = Players:GetPlayerFromCharacter(char)
+					if player then
+						triggered = true
+						currentGasSpeed += 0.10
+						print("Gas speed boosted to", currentGasSpeed)
+						ReplicatedStorage:WaitForChild("ShowGasBoostUIEvent"):FireAllClients()
+					end
+				end)
+				table.insert(gasBoostConnections, connection)
+				print("Set up GasBoostZone:", zone.Name)
+			end
+		end
+	end
+end
+
+function GasManagerService.Start(mapModel)
+	GasManagerService.Stop(false) -- ensure any previous threads/connections are cleaned up, but preserve boost connections
+
+	-- Reset all states EXCEPT gas speed - preserve boost zone increases from countdown
+	-- currentGasSpeed keeps the accumulated boosts from the countdown phase
+	secondChanceUsed = {} -- reset second chance usage for all players
+
+	local gas = mapModel:FindFirstChild("Gas", true)
+	if not gas then 
+		warn("Gas not found in map model")
+		return 
+	end
+
+	-- Ensure gas starts at the correct position for this map
+	-- Find the spawn point to position gas below it
+	local spawn = mapModel:FindFirstChild("MapSpawn", true)
+	if spawn then
+		-- Position gas below the spawn point
+		gas.Position = Vector3.new(spawn.Position.X, spawn.Position.Y - 50, spawn.Position.Z)
+	else
+		-- Fallback: position gas at a low Y value
+		gas.Position = Vector3.new(gas.Position.X, -50, gas.Position.Z)
+	end
+
+	print("Gas positioned at:", gas.Position)
+
+	local overlappedPlayers = {}
+
+	task.delay(0.1, function()
+		gasThread = task.spawn(function()
+			gasStarted = true
+			print("Gas thread started, speed:", currentGasSpeed)
+
+			local checkpointCheckCounter = 0
+			while gas and gas.Parent do
+				gas.Position += Vector3.new(0, currentGasSpeed, 0)
+
+				-- NEW: Check for expired checkpoints every 10 gas ticks (1 second) for efficiency
+				checkpointCheckCounter = checkpointCheckCounter + 1
+				if checkpointCheckCounter >= 10 then
+					deactivateExpiredCheckpoints()
+					checkpointCheckCounter = 0
+				end
+
+				task.wait(0.1)
+			end
+		end)
+	end)
+
+	-- CRITICAL FIX: Update references to point to the current game's state tables
+	local context = GameStateService.GetContext()
+	finishedPlayers = context.finishedPlayers
+	secondChanceUsed = context.secondChanceUsed
+
+	-- Debug: Check if finishedPlayers is properly cleared
+	local finishedCount = 0
+	for _ in pairs(finishedPlayers) do
+		finishedCount = finishedCount + 1
+	end
+	print("🟢 GasManager: finishedPlayers count at start:", finishedCount)
+
+	-- NEW: Deactivate any checkpoints that are already below the starting gas position
+	task.defer(function()
+		deactivateExpiredCheckpoints()
+	end)
+
+	gasTouchConnection = gas.Touched:Connect(function(hit)
+		-- ========================================
+		-- COMPLETELY REWRITTEN GAS COLLISION LOGIC
+		-- ========================================
+		-- PRIORITY 1: Checkpoint teleportation (ALWAYS works if player has valid checkpoint)
+		-- PRIORITY 2: Second Chance power-up (only if no valid checkpoint)
+		-- PRIORITY 3: Death (only if no checkpoint and no Second Chance)
+		-- ========================================
+
+		local char = hit.Parent
+		if not char or not char:IsA("Model") then 
+			return 
+		end
+
+		local player = Players:GetPlayerFromCharacter(char)
+		if not player then 
+			return 
+		end
+
+		local humanoid = char:FindFirstChildOfClass("Humanoid")
+		local rootPart = char:FindFirstChild("HumanoidRootPart")
+		if not humanoid or not rootPart then 
+			return 
+		end
+
+		-- Check if player is alive and not finished
+		if humanoid.Health <= 0 or not GameStateService.IsPlayerAlive(player) or finishedPlayers[player] then 
+			print("🚫 Gas ignored player:", player.Name, "- Health:", humanoid.Health, "Alive:", GameStateService.IsPlayerAlive(player), "Finished:", finishedPlayers[player])
+			return 
+		end
+
+		print("Gas touched by player:", player.Name, "Gas Y:", gas.Position.Y, "Player Y:", rootPart.Position.Y)
+
+		-- PRIORITY 1: CHECKPOINT TELEPORTATION (HIGHEST PRIORITY)
+		-- Use enhanced validation function for maximum reliability
+		local isCheckpointValid, checkpointPos, checkpointY = isCheckpointFullyValid(player)
+
+		if isCheckpointValid and checkpointPos and checkpointY then
+			print("🔍 " .. player.Name .. " has VALID checkpoint at Y: " .. checkpointY .. ", Gas Y: " .. gas.Position.Y)
+
+			-- Check cooldown to prevent rapid teleportation
+			local now = tick()
+			local lastTeleport = checkpointCooldowns[player]
+
+			if not lastTeleport or (now - lastTeleport) > 1.0 then -- 1 second cooldown
+				-- TELEPORT PLAYER TO CHECKPOINT
+				print("🚀 TELEPORTING " .. player.Name .. " to checkpoint at:", checkpointPos)
+
+				-- Additional safety check before teleportation
+				if checkpointPos and typeof(checkpointPos) == "Vector3" then
+					-- Teleport player to checkpoint and restore health
+					rootPart.CFrame = CFrame.new(checkpointPos)
+					humanoid.Health = humanoid.MaxHealth
+					checkpointCooldowns[player] = now
+
+					print("✅ " .. player.Name .. " SUCCESSFULLY teleported to checkpoint (Gas Y: " .. gas.Position.Y .. ", Checkpoint Y: " .. checkpointY .. ")")
+					return -- Player survived - no further processing needed
+				else
+					print("❌ CRITICAL ERROR: Checkpoint position invalid during teleportation for", player.Name)
+				end
+			else
+				print("⏰ " .. player.Name .. " checkpoint teleport on cooldown, time remaining: " .. string.format("%.1f", 1.0 - (now - lastTeleport)) .. "s")
+				-- Continue to other logic since checkpoint is on cooldown
+			end
+		else
+			-- Checkpoint validation failed - log the reason
+			local checkpointPos = player:GetAttribute("LastCheckpointPosition")
+			local checkpointY = player:GetAttribute("LastCheckpointY")
+			if checkpointPos and checkpointY then
+				print("🚫 " .. player.Name .. " has INVALID checkpoint - validation failed")
+				print("   Checkpoint data - Pos:", checkpointPos, "Y:", checkpointY)
+			else
+				print("🔍 " .. player.Name .. " has no active checkpoint")
+			end
+		end
+
+		-- PRIORITY 2: SECOND CHANCE POWER-UP (only if no valid checkpoint)
+		local inventory = player:FindFirstChild("Inventory")
+		local ownedUpgrades = inventory and inventory:FindFirstChild("OwnedUpgrades")
+		local hasSecondChance = ownedUpgrades and ownedUpgrades:FindFirstChild("Second Chance") ~= nil
+
+		if hasSecondChance and not secondChanceUsed[player] then
+			secondChanceUsed[player] = true
+			-- Let client handle the teleport and effects
+			ShowSecondChanceUIEvent:FireClient(player)
+			print("✨ Second Chance triggered for", player.Name, "- Player falling into gas (no valid checkpoint)")
+			return -- Player gets another chance - no game end check needed
+		end
+
+		-- PRIORITY 3: DEATH (final fallback) - ONLY runs if player has no checkpoint and no Second Chance
+		print("💀 Player", player.Name, "died to gas (no valid checkpoint, no Second Chance)")
+
+		GameStateService.MarkPlayerDead(player)
+		humanoid.Health = 0
+
+		-- ENHANCED: Ensure game end check happens immediately
+		task.defer(function()
+			GameFlowService.CheckIfGameShouldEnd(mapModel)
+		end)
+	end)
+
+	print("Gas touch connection established for map:", mapModel.Name)
+end
+
+-- Cleanup method
+function GasManagerService.Stop(resetSpeed)
+	if gasThread then
+		task.cancel(gasThread)
+		gasThread = nil
+		print("Gas thread stopped.")
+	end
+
+	-- Disconnect gas touch connection
+	if gasTouchConnection then
+		gasTouchConnection:Disconnect()
+		gasTouchConnection = nil
+	end
+
+	-- Disconnect any boost connections (only if we're doing a full reset)
+	if resetSpeed ~= false then
+		for _, conn in ipairs(gasBoostConnections) do
+			if conn and typeof(conn) == "RBXScriptConnection" then
+				conn:Disconnect()
+			end
+		end
+		gasBoostConnections = {}
+	end
+
+	-- Reset gas speed and state (only if resetSpeed is true or not provided)
+	if resetSpeed ~= false then
+		currentGasSpeed = 0.20
+	end
+
+	gasStarted = false
+
+	-- Reset gas position if there's a current map
+	local currentMap = GameStateService.GetCurrentMap()
+	if currentMap then
+		local gas = currentMap:FindFirstChild("Gas", true)
+		if gas then
+			-- Reset gas to a low position so it doesn't interfere with new games
+			gas.Position = Vector3.new(gas.Position.X, -100, gas.Position.Z)
+		end
+	end
+
+	-- Clear finished players state to ensure proper reset
+	if finishedPlayers then
+		for player, _ in pairs(finishedPlayers) do
+			finishedPlayers[player] = nil
+		end
+	end
+
+	-- Clear second chance usage
+	if secondChanceUsed then
+		for player, _ in pairs(secondChanceUsed) do
+			secondChanceUsed[player] = nil
+		end
+	end
+
+	-- Clear checkpoint cooldowns
+	for player, _ in pairs(checkpointCooldowns) do
+		checkpointCooldowns[player] = nil
+	end
+end
+
+-- Lobby gas (improved to always work for lobby players)
+local gasPart = workspace:WaitForChild("SpawnLocation"):WaitForChild("SpawnGas")
+local spawnPart = workspace:WaitForChild("SpawnLocation"):FindFirstChild("SpawnPoint") or workspace:WaitForChild("SpawnLocation")
+local recentlyTeleported = {}
+
+gasPart.Touched:Connect(function(hit)
+	local character = hit.Parent
+	local player = Players:GetPlayerFromCharacter(character)
+	local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not player or not humanoidRootPart then return end
+
+	-- Check if player is actively playing the current game
+	local context = GameStateService.GetContext()
+	local isPlayerInGame = context and context.readyPlayers and context.readyPlayers[player]
+	local isPlayerAlive = GameStateService.IsPlayerAlive(player)
+	local isGameActive = GameStateService.IsGameInProgress()
+
+	-- Lobby gas should always affect players who are NOT actively playing
+	-- This includes: players in lobby, spectating, or not ready
+	if isGameActive and isPlayerInGame and isPlayerAlive then
+		-- Player is actively playing - don't interfere with game gas system
+		print("🚫 Lobby gas teleport blocked for active player:", player.Name)
+		return
+	end
+
+	-- Apply lobby gas teleportation
+	if not recentlyTeleported[player] then
+		recentlyTeleported[player] = true
+
+		-- Teleport player back to lobby spawn
+		humanoidRootPart.CFrame = spawnPart.CFrame + Vector3.new(0, 5, 0)
+		print("🏠 Lobby gas teleported player back to spawn:", player.Name, "- Game active:", isGameActive, "Player in game:", isPlayerInGame, "Player alive:", isPlayerAlive)
+
+		-- Reset cooldown after delay
+		task.delay(2, function()
+			recentlyTeleported[player] = nil
+		end)
+	else
+		print("⏰ Lobby gas teleport on cooldown for:", player.Name)
+	end
+end)
+
+return GasManagerService

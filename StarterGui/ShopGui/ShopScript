@@ -1,0 +1,272 @@
+-- 📍 Location: StarterGui > ShopGui > ShopMenu > ShopScript
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+-- RemoteEvents
+local purchaseEvent = ReplicatedStorage:WaitForChild("PurchaseItemEvent")
+local feedbackEvent = ReplicatedStorage:WaitForChild("PurchaseFeedbackEvent")
+local refreshEvent = ReplicatedStorage:WaitForChild("RefreshInventoryEvent")
+local dataReadyEvent = ReplicatedStorage:WaitForChild("PlayerDataReadyEvent")
+
+-- Shop data module
+local ShopItemData = require(ReplicatedStorage:WaitForChild("ShopItemData"))
+
+-- UI elements
+local shopMenu = script.Parent
+local tabs = shopMenu:WaitForChild("Tabs")
+local scrollingFrame = shopMenu:WaitForChild("ScrollingFrame")
+local itemTemplate = scrollingFrame:WaitForChild("ItemTemplate")
+
+local powerupsButton = tabs:WaitForChild("PowerUps Button")
+local emotesButton = tabs:WaitForChild("Emotes Button")
+local upgradesButton = tabs:WaitForChild("Upgrades Button")
+local glowButton = tabs:WaitForChild("Glow Button")
+
+local feedbackLabel = shopMenu:FindFirstChild("TextLabel") -- optional
+
+-- Configuration
+local DEFAULT_CATEGORY = "PowerUp"
+local currentCategory = DEFAULT_CATEGORY
+
+-- Asset IDs for currency icons
+local GOLD_ICON = "rbxassetid://125524445607737"   
+local ROBUX_ICON = "rbxassetid://137537744826496"
+
+-- Folder mapping
+local categoryFolders = {
+	PowerUp = "OwnedPowerUps",
+	Emote = "OwnedEmotes",
+	Upgrade = "OwnedUpgrades",
+	Glow = "OwnedGlows"
+}
+
+-- Image preloading for better performance
+local preloadedImages = {}
+local function preloadImage(imageId)
+	if not preloadedImages[imageId] then
+		preloadedImages[imageId] = true
+		-- Create a temporary ImageLabel to preload the image
+		local tempImage = Instance.new("ImageLabel")
+		tempImage.Image = imageId
+		tempImage.Parent = script.Parent -- Use the shop menu as parent instead of CoreGui
+		tempImage.Size = UDim2.new(0, 1, 0, 1) -- Make it tiny
+		tempImage.Position = UDim2.new(0, -1000, 0, -1000) -- Position it off-screen
+		tempImage.Visible = false -- Hide it
+		task.defer(function()
+			tempImage:Destroy()
+		end)
+	end
+end
+
+-- Preload all shop images
+local function preloadShopImages()
+	for category, items in pairs(ShopItemData) do
+		for itemName, itemData in pairs(items) do
+			if itemData.ShopIcon then
+				preloadImage(itemData.ShopIcon)
+			end
+		end
+	end
+	-- Preload currency icons
+	preloadImage(GOLD_ICON)
+	preloadImage(ROBUX_ICON)
+end
+
+-- Clear previous UI items
+local function clearItems()
+	for _, child in ipairs(scrollingFrame:GetChildren()) do
+		if child:IsA("Frame") and child.Name ~= "ItemTemplate" then
+			child:Destroy()
+		end
+	end
+end
+
+-- Update tab button states
+local function updateTabStates(activeCategory)
+	-- Reset all buttons
+	powerupsButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	emotesButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	upgradesButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	glowButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+
+	-- Highlight active button
+	if activeCategory == "PowerUp" then
+		powerupsButton.BackgroundColor3 = Color3.fromRGB(255, 255, 127)
+	elseif activeCategory == "Emote" then
+		emotesButton.BackgroundColor3 = Color3.fromRGB(255, 255, 127)
+	elseif activeCategory == "Upgrade" then
+		upgradesButton.BackgroundColor3 = Color3.fromRGB(255, 255, 127)
+	elseif activeCategory == "Glow" then
+		glowButton.BackgroundColor3 = Color3.fromRGB(255, 255, 127)
+	end
+end
+
+-- Display shop items by category
+local function displayShopItems(category)
+	currentCategory = category
+	clearItems()
+	updateTabStates(category)
+
+	local inventory = player:FindFirstChild("Inventory")
+	if not inventory then return end
+
+	local folderName = categoryFolders[category]
+	local ownedFolder = inventory:FindFirstChild(folderName)
+	if not ownedFolder then return end
+
+	local ownedItems = {}
+	for _, item in ipairs(ownedFolder:GetChildren()) do
+		ownedItems[item.Name] = true
+	end
+
+	for itemName, itemData in pairs(ShopItemData[category]) do
+		-- For Glow category, only show items that have a Price (purchasable items)
+		if category == "Glow" and not itemData.Price then
+			continue -- Skip non-purchasable glows
+		end
+
+		local clone = itemTemplate:Clone()
+		clone.Name = itemName
+		clone.Visible = true
+
+		local priceWrapper = clone:FindFirstChild("PriceWrapper")
+		local priceLabel = priceWrapper and priceWrapper:FindFirstChild("Price")
+		local currencyIcon = priceWrapper and priceWrapper:FindFirstChild("CurrencyIcon")
+
+		local iconImage = clone:FindFirstChild("Icon")
+		local buyButton = clone:FindFirstChild("BuyButton")
+
+		-- Set icon image (preloaded for better performance)
+		if iconImage and itemData.ShopIcon then
+			iconImage.Image = itemData.ShopIcon
+		end
+
+		local isOwned = ownedItems[itemName]
+		local currency = (itemData.Currency or "Gold"):lower()
+
+		if isOwned then
+			-- Item is owned
+			if priceLabel then
+				priceLabel.Text = "Owned"
+				priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+			end
+			if currencyIcon then
+				currencyIcon.Visible = false
+			end
+			if buyButton then
+				buyButton.Text = "Owned"
+				buyButton.AutoButtonColor = false
+				buyButton.Active = false
+				buyButton.BackgroundColor3 = Color3.fromRGB(100, 255, 100)
+			end
+		else
+			-- Item is available for purchase
+			if priceLabel then
+				priceLabel.Text = tostring(itemData.Price)
+				priceLabel.TextColor3 = Color3.new(1, 1, 1)
+			end
+
+			if currencyIcon then
+				currencyIcon.Visible = true
+				if currency == "robux" then
+					currencyIcon.Image = ROBUX_ICON
+				else
+					currencyIcon.Image = GOLD_ICON
+				end
+			end
+
+			if buyButton then
+				buyButton.Text = "Buy"
+				buyButton.AutoButtonColor = true
+				buyButton.Active = true
+				buyButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+				buyButton.MouseButton1Click:Connect(function()
+					purchaseEvent:FireServer({
+						Title = itemName,
+						Price = itemData.Price,
+						Currency = itemData.Currency or "Gold",
+						Category = category,
+						Icon = itemData.ShopIcon
+					})
+
+					-- Temporarily save this for auto-equip after feedback
+					player:SetAttribute("LastPurchasedCategory", category)
+					player:SetAttribute("LastPurchasedItem", itemName)
+				end)
+			end
+		end
+
+		clone.Parent = scrollingFrame
+	end
+end
+
+-- Tab handlers
+powerupsButton.MouseButton1Click:Connect(function()
+	displayShopItems("PowerUp")
+end)
+
+emotesButton.MouseButton1Click:Connect(function()
+	displayShopItems("Emote")
+end)
+
+upgradesButton.MouseButton1Click:Connect(function()
+	displayShopItems("Upgrade")
+end)
+
+glowButton.MouseButton1Click:Connect(function()
+	displayShopItems("Glow")
+end)
+
+-- Refresh shop when inventory changes
+refreshEvent.OnClientEvent:Connect(function(updatedCategory)
+	if updatedCategory == currentCategory then
+		displayShopItems(currentCategory)
+	end
+end)
+
+-- Handle feedback and auto-equip after purchase
+feedbackEvent.OnClientEvent:Connect(function(message)
+	-- Only auto-equip if the message indicates a successful purchase (not a Robux prompt)
+	if message and message:find("Successfully purchased") then
+		local category = player:GetAttribute("LastPurchasedCategory")
+		local itemName = player:GetAttribute("LastPurchasedItem")
+		if category and itemName then
+			-- Automatically equip the newly purchased item
+			local equippedMap = {
+				PowerUp = "EquippedPowerUp",
+				Emote = "EquippedEmote",
+				Upgrade = "EquippedUpgrade",
+				Glow = "EquippedGlow"
+			}
+			local equippedValue = player:FindFirstChild("Inventory"):FindFirstChild(equippedMap[category])
+			if equippedValue then
+				equippedValue.Value = itemName
+				local setEquippedEvent = ReplicatedStorage:FindFirstChild("SetEquippedItemEvent")
+				if setEquippedEvent then
+					setEquippedEvent:FireServer(equippedMap[category], itemName)
+				end
+			end
+		end
+	end
+end)
+
+-- Initialize
+local function initialize()
+	-- Preload images for better performance
+	preloadShopImages()
+
+	-- Set up mouse controller
+	local MenuMouseController = require(game:GetService("ReplicatedStorage"):WaitForChild("MenuMouseController"))
+	MenuMouseController.Watch(script.Parent)
+
+	-- Wait for data to be ready, then display default category
+	dataReadyEvent.OnClientEvent:Connect(function()
+		displayShopItems(DEFAULT_CATEGORY)
+	end)
+end
+
+-- Start initialization
+initialize()
+

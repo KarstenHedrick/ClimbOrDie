@@ -1,0 +1,8 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local EmoteService = require(game.ServerScriptService.Services.EmoteService)
+
+local playEmoteEvent = ReplicatedStorage:WaitForChild("PlayEmoteEvent")
+
+playEmoteEvent.OnServerEvent:Connect(function(player, emoteName)
+	EmoteService.PlayEmote(player, emoteName)
+end)

@@ -1,0 +1,309 @@
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
+
+-- Note: StreamingTargetRadius property may not be available in current Roblox version
+-- Alternative: You can adjust streaming settings in Studio settings or use other methods
+-- to control how far players can see in the game
+
+-- RemoteEvents
+local readyEvent = ReplicatedStorage:WaitForChild("PlayerReadyEvent")
+local showVotingGuiEvent = ReplicatedStorage:WaitForChild("ShowVotingGuiEvent")
+
+-- Player Data Service
+local PlayerDataService = require(script.Parent.Services.PlayerDataService)
+
+-- Modules
+local VotingService = require(game.ServerScriptService.Services:WaitForChild("VotingService"))
+local MapLoaderService = require(game.ServerScriptService.Services:WaitForChild("MapLoaderService"))
+local GasManagerService = require(game.ServerScriptService.Services:WaitForChild("GasManagerService"))
+local SpectateService = require(game.ServerScriptService.Services:WaitForChild("SpectateService"))
+local GameStateService = require(game.ServerScriptService.Services:WaitForChild("GameStateService"))
+local UIService = require(game.ServerScriptService.Services:WaitForChild("UIService"))
+local GameFlowService = require(game.ServerScriptService.Services:WaitForChild("GameFlowService"))
+local DeveloperToolsService = require(game.ServerScriptService.Services:WaitForChild("DeveloperToolsService"))
+local FinishZoneService = require(game.ServerScriptService.Services:WaitForChild("FinishZoneService"))
+local PlayerCollisionService = require(game.ServerScriptService.Services.PlayerCollisionService)
+local TimerZoneService = require(game.ServerScriptService.Services:WaitForChild("TimerZoneService"))
+local ShopDummyService = require(game.ServerScriptService.Services:WaitForChild("ShopDummyService"))
+local MusicService = require(game.ServerScriptService.Services:WaitForChild("MusicService"))
+local PowerUpEffectsService = require(game.ServerScriptService.Services:WaitForChild("PowerUpEffectsService"))
+
+-- Game State
+local state = GameStateService.GetState()
+
+-- Load/Save Player Data
+Players.PlayerAdded:Connect(function(player)
+	PlayerDataService.Load(player)
+
+	player.CharacterAdded:Connect(function(char)
+		task.wait(0.1) -- wait for HumanoidRootPart to load
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if not hrp then return end
+
+		-- Clear any lingering finished state when player respawns
+		local context = GameStateService.GetContext()
+		if context.finishedPlayers[player] then
+			print("🔄 Clearing finished state for respawned player:", player.Name)
+			context.finishedPlayers[player] = nil
+		end
+
+		-- Inform late joiner of countdown if game is in progress
+		if GameStateService.IsGameInProgress() then
+			local context = GameStateService.GetContext()
+			-- Send countdown to ALL players who join during an active game
+			-- This ensures they see "GAS RISES IN..." even if they can't join
+			MapLoaderService.SendCountdownToPlayer(player)
+			print("Sent countdown to new player who joined during active game:", player.Name)
+
+			-- CRITICAL FIX: Hide lobby UI for new players who join during active game
+			-- This prevents them from seeing "Join Game" button and "Match in Progress" text
+			print("🎯 Hiding lobby UI for new player who joined during active game:", player.Name)
+			local hideLobbyEvent = ReplicatedStorage:FindFirstChild("HideLobbyUIEvent")
+			if hideLobbyEvent then
+				hideLobbyEvent:FireClient(player)
+				print("✅ Fired HideLobbyUIEvent to new player:", player.Name)
+			else
+				warn("HideLobbyUIEvent not found - new player may see lobby UI")
+			end
+		end
+
+		if GameStateService.IsGameInProgress() and not state.readyPlayers[player] then
+			-- Optional: use a dedicated LobbySpawn if you have one
+			local lobbySpawn = workspace:FindFirstChild("SpawnLocation")
+			if lobbySpawn then
+				hrp.CFrame = lobbySpawn.CFrame + Vector3.new(0, 5, 0)
+			else
+				hrp.CFrame = CFrame.new(0, 150, 0) -- fallback: put them above lobby
+			end
+
+			-- Temporarily anchor for positioning, then unanchor
+			hrp.Anchored = true
+			task.delay(0.5, function()
+				if hrp then hrp.Anchored = false end
+			end)
+
+			-- Update spectate UI for player who respawned in lobby
+			SpectateService.UpdateSpectateUIForPlayer(player)
+		end
+	end)
+end)
+
+-- Player Removing Event
+Players.PlayerRemoving:Connect(function(player)
+	-- Save their data
+	PlayerDataService.Save(player)
+
+	-- Fire client-side cleanup event
+	ReplicatedStorage:WaitForChild("PlayerLeftEvent"):FireAllClients(player)
+
+	local state = GameStateService.GetState()
+
+	-- Remove from alivePlayers if active
+	if state.alivePlayers[player] then
+		state.alivePlayers[player] = nil
+	end
+
+	-- Get the map model and check for game end
+	if GameStateService.IsGameInProgress() then
+		local currentMap = GameStateService.GetCurrentMap()
+		GameFlowService.CheckIfGameShouldEnd(currentMap)
+	end
+end)
+
+-- Utility: Check if player owns a specific upgrade
+local function hasUpgrade(player, upgradeName)
+	local inventory = player:FindFirstChild("Inventory")
+	local ownedUpgrades = inventory and inventory:FindFirstChild("OwnedUpgrades")
+	return ownedUpgrades and ownedUpgrades:FindFirstChild(upgradeName) ~= nil
+end
+
+-- Initialize Services
+MapLoaderService.Init({ hasUpgrade = hasUpgrade })
+
+GasManagerService.Init({
+	hasUpgrade = hasUpgrade,
+	finishedPlayers = state.finishedPlayers,
+	secondChanceUsed = state.secondChanceUsed
+})
+
+-- Initialize GameFlowService for periodic game end checks
+GameFlowService.Init()
+
+VotingService.Init(state.readyPlayers, function(winningMap)
+	startGameWithWinningMap(winningMap)
+end, function(winningMap)
+	startGameAfterVoting(winningMap)
+end)
+
+SpectateService.Init({ alivePlayers = state.alivePlayers })
+
+DeveloperToolsService.Init()
+
+PlayerCollisionService.Init()
+
+ShopDummyService.Init()
+
+-- Initialize Music Service
+MusicService.Init()
+
+-- PowerUp Effects Service initializes automatically
+
+-- Start lobby music when the server starts
+MusicService.PlayLobbyMusic()
+
+-- Ready-up Logic
+readyEvent.OnServerEvent:Connect(function(player)
+	-- Don't allow readying up if game is in progress
+	if GameStateService.IsGameInProgress() then
+		print(player.Name .. " tried to ready up during game - ignoring")
+		readyEvent:FireClient(player, false)
+		return
+	end
+
+	-- Don't allow double-readying
+	if state.readyPlayers[player] then
+		print(player.Name .. " is already ready")
+		readyEvent:FireClient(player, true)
+		return
+	end
+
+	-- Mark player as ready
+	state.readyPlayers[player] = true
+
+	-- Confirm ready state to client
+	readyEvent:FireClient(player, true)
+
+	-- Show UI and broadcast
+	UIService.SendMessageAll(player.Name .. " is now ready!")
+	showVotingGuiEvent:FireClient(player, true)
+
+	print("Player " .. player.Name .. " is now ready. Ready players count:", #state.readyPlayers)
+
+	-- Check if we should start countdown
+	if not state.countdownStarted then
+		local totalPlayers = #Players:GetPlayers()
+		local readyCount = 0
+
+		for _, _ in pairs(state.readyPlayers) do
+			readyCount = readyCount + 1
+		end
+
+		print("Ready check: " .. readyCount .. "/" .. totalPlayers .. " players ready")
+
+		-- Start countdown if at least 1 player is ready (adjust as needed)
+		if readyCount >= 1 then
+			state.countdownStarted = true
+			print("Starting voting countdown...")
+			VotingService.StartCountdownToGame()
+		end
+	end
+end)
+
+-- Game Startup
+function startGameWithWinningMap(mapName)
+	mapName = mapName or "Map_SkyRise"
+	print("Map selected:", mapName)
+	loadMap(mapName)
+end
+
+function loadMap(mapName)
+	-- Set up game context for map loading
+	local context = GameStateService.GetContext()
+	context.loadGasCallback = startGas
+	context.checkGameEndCallback = GameFlowService.CheckIfGameShouldEnd
+	context.connectFinishCallback = FinishZoneService.ConnectFinishZone
+
+	MapLoaderService.LoadMap(mapName)
+end
+
+function startGameAfterVoting(mapName)
+	mapName = mapName or "Map_SkyRise"
+	print("🎯 startGameAfterVoting called with map:", mapName)
+	startGame(mapName)
+end
+
+function startGame(mapName)
+	-- This function is called after voting ends and map is loaded
+	-- Now spawn players and start the game
+	print("🚀 startGame called with map:", mapName)
+	GameStateService.SetGameInProgress(true)
+
+	-- Switch to game music
+	MusicService.PlayGameMusic()
+
+	-- CRITICAL FIX: Hide lobby UI for ALL players when game starts
+	-- This ensures the "Join Game" and "Match in Progress" text is hidden for everyone
+	print("🎯 Hiding lobby UI for all players - game is starting")
+	local hideLobbyEvent = ReplicatedStorage:FindFirstChild("HideLobbyUIEvent")
+	if hideLobbyEvent then
+		hideLobbyEvent:FireAllClients()
+		print("✅ Fired HideLobbyUIEvent to all clients")
+	else
+		warn("HideLobbyUIEvent not found - lobby UI may not hide properly")
+	end
+
+	-- Initialize Spectate Service with correct player sets/properties
+	SpectateService.Init({ alivePlayers = state.alivePlayers })
+	SpectateService.SetGameActive(true)
+
+	-- Start periodic game end check for this game
+	GameFlowService.StartPeriodicGameEndCheck()
+
+	-- Small delay to ensure map is fully loaded before spawning players
+	task.delay(0.5, function()
+		print("👥 Spawning players on loaded map...")
+		MapLoaderService.SpawnPlayersOnLoadedMap()
+
+		-- Reset ready players AFTER spawning them
+		GameStateService.ResetReadyPlayers()
+
+		-- Show spectate UI AFTER players are spawned on the map
+		-- This prevents the brief flash of the spectate button before teleportation
+		SpectateService.ShowSpectateUIAfterSpawn()
+	end)
+
+	VotingService.Reset()
+end
+
+-- Join Game for Late Joiners
+local joinEvent = ReplicatedStorage:FindFirstChild("JoinGameRequestEvent") or Instance.new("RemoteEvent")
+joinEvent.Name = "JoinGameRequestEvent"
+joinEvent.Parent = ReplicatedStorage
+
+joinEvent.OnServerEvent:Connect(function(player)
+	if not GameStateService.IsGameInProgress() then return end
+
+	local currentContext = GameStateService.GetContext()
+	if not currentContext or not currentContext.joinableUntil then return end
+
+	if os.clock() > currentContext.joinableUntil then return end
+	if currentContext.readyPlayers[player] then return end
+
+	print("Late join request received for player:", player.Name)
+
+	if not MapLoaderService.JoinLatePlayer then
+		warn("JoinLatePlayer function is nil!")
+		return
+	end
+
+	MapLoaderService.JoinLatePlayer(player)
+end)
+
+-- Gas Control
+function startGas(mapModel)
+	GasManagerService.Start(mapModel)
+end
+
+function stopGas()
+	GasManagerService.Stop()
+end
+
+-- Full Reset (when all players are dead)
+function endGame(mapModel)
+	-- Stop periodic game end check
+	GameFlowService.StopPeriodicGameEndCheck()
+	GameFlowService.EndGameHardReset(mapModel)
+end

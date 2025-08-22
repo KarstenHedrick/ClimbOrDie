@@ -1,0 +1,69 @@
+local PurchaseService = {}
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local DevProductMap = require(game.ServerScriptService.Modules:WaitForChild("DevProductMap"))
+
+local folderMap = {
+	PowerUp = "OwnedPowerUps",
+	Emote = "OwnedEmotes",
+	Upgrade = "OwnedUpgrades",
+	Glow = "OwnedGlows"
+}
+
+function PurchaseService.TryPurchase(player, item)
+	if typeof(item) ~= "table" or not item.Title or not item.Category or not item.Price then
+		return false, "Invalid item data."
+	end
+
+	local inventory = player:FindFirstChild("Inventory")
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not inventory or not leaderstats then
+		return false, "Error loading player data."
+	end
+
+	local folderName = folderMap[item.Category]
+	if not folderName then return false, "Invalid category." end
+
+	local categoryFolder = inventory:FindFirstChild(folderName)
+	if not categoryFolder then return false, "Inventory folder missing." end
+
+	if categoryFolder:FindFirstChild(item.Title) then
+		return false, "You already own " .. item.Title
+	end
+
+	-- 🔁 If already in Robux purchase prompt
+	if player:GetAttribute("PendingProduct") then
+		return false, "You're already purchasing something."
+	end
+
+	-- 🔁 Robux-based item (developer product)
+	if item.Currency and item.Currency:lower() == "robux" then
+		local productId = DevProductMap[item.Title]
+		if not productId then
+			return false, "Developer product not found for " .. item.Title
+		end
+
+		player:SetAttribute("PendingProduct", item.Title)
+		player:SetAttribute("PendingCategory", item.Category)
+		MarketplaceService:PromptProductPurchase(player, productId)
+
+		return true, "Prompting Robux purchase..."
+	end
+
+	-- 🪙 Gold-based item
+	local gold = leaderstats:FindFirstChild("Gold")
+	if not gold or gold.Value < item.Price then
+		return false, "Not enough gold to buy " .. item.Title
+	end
+
+	gold.Value -= item.Price
+
+	local newItem = Instance.new("StringValue")
+	newItem.Name = item.Title
+	newItem.Value = item.Title
+	newItem.Parent = categoryFolder
+
+	return true, "Successfully purchased " .. item.Title
+end
+
+return PurchaseService

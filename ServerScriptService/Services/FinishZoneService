@@ -1,0 +1,128 @@
+-- FinishZoneService.lua
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
+
+local GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+local GameFlowService = require(script.Parent:WaitForChild("GameFlowService"))
+local InventoryService = require(script.Parent:WaitForChild("InventoryService"))
+
+local FinishZoneService = {}
+
+local messageEvent = ReplicatedStorage:WaitForChild("GameMessageEvent")
+
+local function hasUpgrade(player, upgradeName)
+	local upgradesFolder = player:FindFirstChild("Inventory") and player.Inventory:FindFirstChild("OwnedUpgrades")
+	return upgradesFolder and upgradesFolder:FindFirstChild(upgradeName)
+end
+
+function FinishZoneService.ConnectFinishZone(finishPart, mapClone, context)
+	if not finishPart then return end
+
+	local alivePlayers = context.alivePlayers
+	local finishedPlayers = context.finishedPlayers
+	local highestY = context.highestY
+
+	finishPart.Touched:Connect(function(hit)
+		local char = hit.Parent
+		local player = Players:GetPlayerFromCharacter(char)
+		if not player then return end
+
+		if finishedPlayers[player] or not alivePlayers[player] then return end
+
+		local startTime = player:GetAttribute("StartTime")
+		local elapsedTime = startTime and (os.clock() - startTime) or 0
+		elapsedTime = math.floor(elapsedTime * 100) / 100
+
+		messageEvent:FireAllClients(player.Name .. " completed the map in " .. elapsedTime .. " seconds!")
+		ReplicatedStorage:WaitForChild("ShowFinishTimeEvent"):FireClient(player, elapsedTime)
+
+		alivePlayers[player] = nil
+		finishedPlayers[player] = true
+		highestY[player] = nil
+
+		print("🏁 Player finished:", player.Name, "- Marked as finished in finishedPlayers table")
+
+		-- Ensure player is properly marked as finished in GameStateService
+		GameStateService.MarkPlayerFinished(player)
+
+		local mapName = mapClone.Name
+		local originalMap = mapClone:GetAttribute("OriginalMapName") or mapClone:GetFullName()
+
+		local bestTimes = {}
+		local oldTimesRaw = player:GetAttribute("BestTimes")
+
+		if oldTimesRaw then
+			local success, decoded = pcall(function()
+				return HttpService:JSONDecode(oldTimesRaw)
+			end)
+			if success and typeof(decoded) == "table" then
+				bestTimes = decoded
+			end
+		end
+
+		local oldTime = bestTimes[originalMap]
+		if typeof(oldTime) ~= "number" or elapsedTime < oldTime then
+			bestTimes[originalMap] = elapsedTime
+			player:SetAttribute("BestTimes", HttpService:JSONEncode(bestTimes))
+			print(player.Name .. "'s best time for " .. originalMap .. " updated to", elapsedTime)
+		end
+
+		local newTimeMs = math.floor(elapsedTime * 1000)
+		local bestStore = DataStoreService:GetOrderedDataStore("GlobalBestTime_" .. originalMap)
+		pcall(function()
+			local prev = bestStore:GetAsync(tostring(player.UserId))
+			if not prev or newTimeMs < prev then
+				bestStore:SetAsync(tostring(player.UserId), newTimeMs)
+			end
+		end)
+
+		local weekKey = os.date("Week_%Y_%U")
+		local weeklyStore = DataStoreService:GetOrderedDataStore("WeeklyBestTime_" .. originalMap .. "_" .. weekKey)
+		pcall(function()
+			local prev = weeklyStore:GetAsync(tostring(player.UserId))
+			if not prev or newTimeMs < prev then
+				weeklyStore:SetAsync(tostring(player.UserId), newTimeMs)
+			end
+		end)
+
+		local reward = 1000
+		if hasUpgrade(player, "Double Coins") then reward *= 2 end
+
+		local stats = player:FindFirstChild("leaderstats")
+		if stats then
+			stats.Gold.Value += reward
+			stats.Wins.Value += 1
+		end
+
+		local spawn = workspace:FindFirstChild("SpawnLocation") or workspace:FindFirstChild("LobbySpawn")
+		local root = char:FindFirstChild("HumanoidRootPart")
+		if spawn and root then
+			root.CFrame = spawn.CFrame + Vector3.new(0, 5, 0)
+		end
+
+		-- Force respawn to ensure state is properly reset for next game
+		task.delay(2, function()
+			if player and player.Character then
+				print("🔄 Forcing respawn for finished player:", player.Name)
+				player:LoadCharacter()
+			end
+		end)
+
+		ReplicatedStorage:WaitForChild("ShowWinStatsEvent"):FireClient(player, {
+			time = elapsedTime,
+			gold = reward,
+			wins = 1
+		})
+
+		ReplicatedStorage:WaitForChild("HideClimbProgressGuiEvent"):FireClient(player)
+
+		-- ENHANCED: Check if game should end immediately
+		task.defer(function()
+			GameFlowService.CheckIfGameShouldEnd(mapClone)
+		end)
+	end)
+end
+
+return FinishZoneService

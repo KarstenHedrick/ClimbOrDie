@@ -1,0 +1,8 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local InventoryService = require(game.ServerScriptService.Services.InventoryService)
+
+local event = ReplicatedStorage:WaitForChild("SetEquippedItemEvent")
+
+event.OnServerEvent:Connect(function(player, key, value)
+	InventoryService.SetEquippedItem(player, key, value)
+end)

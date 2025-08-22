@@ -1,0 +1,384 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local GlowManager = require(game.ServerScriptService.Modules:WaitForChild("GlowManager"))
+
+local ShopDummyService = {}
+
+local dummyTemplate = ReplicatedStorage:WaitForChild("LeaderboardDummy")
+local dummySpots = workspace:WaitForChild("ShopDummies")
+
+-- Rotation function for the Shop Dummies
+function ShopDummyService.RotateDummy(model: Model)
+	local primaryPart = model.PrimaryPart
+	if not primaryPart or not primaryPart:IsA("BasePart") then
+		warn("Cannot rotate dummy: Missing valid PrimaryPart")
+		return
+	end
+
+	local rotationSpeed = math.rad(1) -- radians per second (adjust for speed)
+
+	-- Coroutine so it doesn't block
+	coroutine.wrap(function()
+		while model and model.Parent do
+			local deltaTime = RunService.Heartbeat:Wait()
+			primaryPart.CFrame = primaryPart.CFrame * CFrame.Angles(0, rotationSpeed * deltaTime * 60, 0)
+		end
+	end)()
+end
+
+function ShopDummyService.SpawnShadowGlowDummy()
+	local anchor = dummySpots:FindFirstChild("ShadowGlowDummy")
+	if not anchor then 
+		warn("Missing anchor for ShadowGlowDummy") 
+		return 
+	end
+
+	-- Clear existing dummies
+	for _, child in anchor:GetChildren() do
+		child:Destroy()
+	end
+
+	local dummy = dummyTemplate:Clone()
+	dummy.Name = "ShadowGlowShowcase"
+
+	-- Anchor all parts BEFORE parenting or moving it
+	for _, part in dummy:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Anchored = true
+			part.CanCollide = false
+		end
+	end
+
+	-- Set PrimaryPart before moving it
+	local root = dummy:FindFirstChild("HumanoidRootPart")
+	if root then
+		dummy.PrimaryPart = root
+
+		local anchorPos = anchor.Position
+		-- Look towards the ShadowGlowTriggerZone if it exists, otherwise just face forward
+		local lookAtTarget = workspace:FindFirstChild("ShadowGlowTriggerZone")
+		if lookAtTarget then
+			-- Find the actual zone part inside the folder
+			local zonePart = lookAtTarget:FindFirstChild("ShadowGlowZone")
+			if zonePart and zonePart:IsA("BasePart") then
+				local lookPos = Vector3.new(zonePart.Position.X, anchorPos.Y, zonePart.Position.Z)
+				local faceCFrame = CFrame.lookAt(anchorPos, lookPos)
+				dummy:SetPrimaryPartCFrame(faceCFrame)
+			else
+				-- Default facing forward if no zone part found
+				dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+			end
+		else
+			-- Default facing forward
+			dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+		end
+	else
+		warn("Dummy is missing HumanoidRootPart")
+		return
+	end
+
+	-- Only now parent it to Workspace or anchor folder
+	dummy.Parent = anchor
+
+	-- Apply your character skin
+	local humanoid = dummy:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local success, desc = pcall(function()
+			return Players:GetHumanoidDescriptionFromUserId(46721456)
+		end)
+		if success then
+			humanoid:ApplyDescription(desc)
+		else
+			-- Fallback to default gray if your character can't be loaded
+			local defaultDesc = Instance.new("HumanoidDescription")
+			defaultDesc.HeadColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.TorsoColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftLegColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightLegColor = Color3.fromRGB(100, 100, 100)
+			humanoid:ApplyDescription(defaultDesc)
+		end
+	end
+
+	-- Set the nickname to "Shadow Glow"
+	dummy.Name = "Shadow Glow"
+
+	-- Apply ShadowGlow
+	if GlowManager and GlowManager.ApplyGlow then
+		GlowManager.ApplyGlow(dummy, "ShadowGlow")
+	end
+
+	ShopDummyService.RotateDummy(dummy)
+end
+
+function ShopDummyService.SpawnBubblesGlowDummy()
+	local anchor = dummySpots:FindFirstChild("BubblesGlowDummy")
+	if not anchor then 
+		warn("Missing anchor for BubblesGlowDummy") 
+		return 
+	end
+
+	-- Clear existing dummies
+	for _, child in anchor:GetChildren() do
+		child:Destroy()
+	end
+
+	local dummy = dummyTemplate:Clone()
+	dummy.Name = "BubblesGlowShowcase"
+
+	-- Anchor all parts BEFORE parenting or moving it
+	for _, part in dummy:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Anchored = true
+			part.CanCollide = false
+		end
+	end
+
+	-- Set PrimaryPart before moving it
+	local root = dummy:FindFirstChild("HumanoidRootPart")
+	if root then
+		dummy.PrimaryPart = root
+
+		local anchorPos = anchor.Position
+		-- Look towards the BubblesGlowTriggerZone if it exists, otherwise just face forward
+		local lookAtTarget = workspace:FindFirstChild("BubblesGlowTriggerZone")
+		if lookAtTarget then
+			-- Find the actual zone part inside the folder
+			local zonePart = lookAtTarget:FindFirstChild("BubblesGlowZone")
+			if zonePart and zonePart:IsA("BasePart") then
+				local lookPos = Vector3.new(zonePart.Position.X, anchorPos.Y, zonePart.Position.Z)
+				local faceCFrame = CFrame.lookAt(anchorPos, lookPos)
+				dummy:SetPrimaryPartCFrame(faceCFrame)
+			else
+				-- Default facing forward if no zone part found
+				dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+			end
+		else
+			-- Default facing forward
+			dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+		end
+	else
+		warn("Dummy is missing HumanoidRootPart")
+		return
+	end
+
+	-- Only now parent it to Workspace or anchor folder
+	dummy.Parent = anchor
+
+	-- Apply your character skin
+	local humanoid = dummy:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local success, desc = pcall(function()
+			return Players:GetHumanoidDescriptionFromUserId(46721456)
+		end)
+		if success then
+			humanoid:ApplyDescription(desc)
+		else
+			-- Fallback to default gray if your character can't be loaded
+			local defaultDesc = Instance.new("HumanoidDescription")
+			defaultDesc.HeadColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.TorsoColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftLegColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightLegColor = Color3.fromRGB(100, 100, 100)
+			humanoid:ApplyDescription(defaultDesc)
+		end
+	end
+
+	-- Set the nickname to "Bubbles Glow"
+	dummy.Name = "Bubbles Glow"
+
+	-- Apply BubblesGlow
+	if GlowManager and GlowManager.ApplyGlow then
+		GlowManager.ApplyGlow(dummy, "BubblesGlow")
+	end
+
+	ShopDummyService.RotateDummy(dummy)
+end
+
+function ShopDummyService.SpawnHeartsGlowDummy()
+	local anchor = dummySpots:FindFirstChild("HeartsGlowDummy")
+	if not anchor then 
+		warn("Missing anchor for HeartsGlowDummy") 
+		return 
+	end
+
+	-- Clear existing dummies
+	for _, child in anchor:GetChildren() do
+		child:Destroy()
+	end
+
+	local dummy = dummyTemplate:Clone()
+	dummy.Name = "HeartsGlowShowcase"
+
+	-- Anchor all parts BEFORE parenting or moving it
+	for _, part in dummy:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Anchored = true
+			part.CanCollide = false
+		end
+	end
+
+	-- Set PrimaryPart before moving it
+	local root = dummy:FindFirstChild("HumanoidRootPart")
+	if root then
+		dummy.PrimaryPart = root
+
+		local anchorPos = anchor.Position
+		-- Look towards the HeartsGlowTriggerZone if it exists, otherwise just face forward
+		local lookAtTarget = workspace:FindFirstChild("HeartsGlowTriggerZone")
+		if lookAtTarget then
+			-- Find the actual zone part inside the folder
+			local zonePart = lookAtTarget:FindFirstChild("HeartsGlowZone")
+			if zonePart and zonePart:IsA("BasePart") then
+				local lookPos = Vector3.new(zonePart.Position.X, anchorPos.Y, zonePart.Position.Z)
+				local faceCFrame = CFrame.lookAt(anchorPos, lookPos)
+				dummy:SetPrimaryPartCFrame(faceCFrame)
+			else
+				-- Default facing forward if no zone part found
+				dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+			end
+		else
+			-- Default facing forward
+			dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+		end
+	else
+		warn("Dummy is missing HumanoidRootPart")
+		return
+	end
+
+	-- Only now parent it to Workspace or anchor folder
+	dummy.Parent = anchor
+
+	-- Apply your character skin
+	local humanoid = dummy:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local success, desc = pcall(function()
+			return Players:GetHumanoidDescriptionFromUserId(46721456)
+		end)
+		if success then
+			humanoid:ApplyDescription(desc)
+		else
+			-- Fallback to default gray if your character can't be loaded
+			local defaultDesc = Instance.new("HumanoidDescription")
+			defaultDesc.HeadColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.TorsoColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftLegColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightLegColor = Color3.fromRGB(100, 100, 100)
+			humanoid:ApplyDescription(defaultDesc)
+		end
+	end
+
+	-- Set the nickname to "Hearts Glow"
+	dummy.Name = "Hearts Glow"
+
+	-- Apply HeartsGlow
+	if GlowManager and GlowManager.ApplyGlow then
+		GlowManager.ApplyGlow(dummy, "HeartsGlow")
+	end
+
+	ShopDummyService.RotateDummy(dummy)
+end
+
+function ShopDummyService.SpawnGhostsGlowDummy()
+	local anchor = dummySpots:FindFirstChild("GhostsGlowDummy")
+	if not anchor then 
+		warn("Missing anchor for GhostsGlowDummy") 
+		return 
+	end
+
+	-- Clear existing dummies
+	for _, child in anchor:GetChildren() do
+		child:Destroy()
+	end
+
+	local dummy = dummyTemplate:Clone()
+	dummy.Name = "GhostsGlowShowcase"
+
+	-- Anchor all parts BEFORE parenting or moving it
+	for _, part in dummy:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Anchored = true
+			part.CanCollide = false
+		end
+	end
+
+	-- Set PrimaryPart before moving it
+	local root = dummy:FindFirstChild("HumanoidRootPart")
+	if root then
+		dummy.PrimaryPart = root
+
+		local anchorPos = anchor.Position
+		-- Look towards the GhostsGlowTriggerZone if it exists, otherwise just face forward
+		local lookAtTarget = workspace:FindFirstChild("GhostsGlowTriggerZone")
+		if lookAtTarget then
+			-- Find the actual zone part inside the folder
+			local zonePart = lookAtTarget:FindFirstChild("GhostsGlowZone")
+			if zonePart and zonePart:IsA("BasePart") then
+				local lookPos = Vector3.new(zonePart.Position.X, anchorPos.Y, zonePart.Position.Z)
+				local faceCFrame = CFrame.lookAt(anchorPos, lookPos)
+				dummy:SetPrimaryPartCFrame(faceCFrame)
+			else
+				-- Default facing forward if no zone part found
+				dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+			end
+		else
+			-- Default facing forward
+			dummy:SetPrimaryPartCFrame(CFrame.new(anchorPos) * CFrame.Angles(0, 0, 0))
+		end
+	else
+		warn("Dummy is missing HumanoidRootPart")
+		return
+	end
+
+	-- Only now parent it to Workspace or anchor folder
+	dummy.Parent = anchor
+
+	-- Apply your character skin
+	local humanoid = dummy:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local success, desc = pcall(function()
+			return Players:GetHumanoidDescriptionFromUserId(46721456)
+		end)
+		if success then
+			humanoid:ApplyDescription(desc)
+		else
+			-- Fallback to default gray if your character can't be loaded
+			local defaultDesc = Instance.new("HumanoidDescription")
+			defaultDesc.HeadColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.TorsoColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftLegColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightLegColor = Color3.fromRGB(100, 100, 100)
+			humanoid:ApplyDescription(defaultDesc)
+		end
+	end
+
+	-- Set the nickname to "Ghosts Glow"
+	dummy.Name = "Ghosts Glow"
+
+	-- Apply GhostsGlow
+	if GlowManager and GlowManager.ApplyGlow then
+		GlowManager.ApplyGlow(dummy, "GhostsGlow")
+	end
+
+	ShopDummyService.RotateDummy(dummy)
+end
+
+-- Initialize function
+function ShopDummyService.Init()
+	print("[ShopDummyService] Initializing all glow showcase dummies...")
+	ShopDummyService.SpawnShadowGlowDummy()
+	ShopDummyService.SpawnBubblesGlowDummy()
+	ShopDummyService.SpawnHeartsGlowDummy()
+	ShopDummyService.SpawnGhostsGlowDummy()
+	print("[ShopDummyService] All glow showcase dummies initialized")
+end
+
+return ShopDummyService 

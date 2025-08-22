@@ -1,0 +1,121 @@
+-- 📍 GameGuiManager (LocalScript in StarterPlayerScripts)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local hideMenusEvent = ReplicatedStorage:WaitForChild("HideGameMenusEvent")
+local showMenusEvent = ReplicatedStorage:WaitForChild("ShowGameMenusEvent")
+
+hideMenusEvent.OnClientEvent:Connect(function()
+	print("HideGameMenusEvent received - hiding game menus")
+
+	-- Check for multiple instances
+	local allShopGuis = playerGui:GetChildren()
+	local shopGuiCount = 0
+	for _, gui in pairs(allShopGuis) do
+		if gui.Name == "ShopGui" then
+			shopGuiCount = shopGuiCount + 1
+		end
+	end
+	print("Total ShopGui instances found:", shopGuiCount)
+
+	local allEquipmentGuis = playerGui:GetChildren()
+	local equipmentGuiCount = 0
+	for _, gui in pairs(allEquipmentGuis) do
+		if gui.Name == "EquipmentGui" then
+			equipmentGuiCount = equipmentGuiCount + 1
+		end
+	end
+	print("Total EquipmentGui instances found:", equipmentGuiCount)
+
+	local shopGui = playerGui:FindFirstChild("ShopGui")
+	local equipmentGui = playerGui:FindFirstChild("EquipmentGui")
+
+	print("Found ShopGui:", shopGui and shopGui.Name or "nil")
+	print("Found EquipmentGui:", equipmentGui and equipmentGui.Name or "nil")
+
+	if shopGui then 
+		print("ShopGui Enabled before:", shopGui.Enabled)
+		shopGui.Enabled = false 
+		print("ShopGui Enabled after:", shopGui.Enabled)
+		print("Shop GUI hidden")
+
+		-- Also try hiding the individual button
+		local shopButton = shopGui:FindFirstChild("ShopButton")
+		if shopButton then
+			print("ShopButton Visible before:", shopButton.Visible)
+			shopButton.Visible = false
+			print("ShopButton Visible after:", shopButton.Visible)
+		end
+
+		-- Check if it gets re-enabled
+		task.delay(0.1, function()
+			if shopGui and shopGui.Parent then
+				print("ShopGui Enabled 0.1s later:", shopGui.Enabled)
+			end
+			if shopButton and shopButton.Parent then
+				print("ShopButton Visible 0.1s later:", shopButton.Visible)
+			end
+		end)
+	else
+		print("Shop GUI not found")
+	end
+	if equipmentGui then 
+		print("EquipmentGui Enabled before:", equipmentGui.Enabled)
+		equipmentGui.Enabled = false 
+		print("EquipmentGui Enabled after:", equipmentGui.Enabled)
+		print("Equipment GUI hidden")
+
+		-- Also try hiding the individual button
+		local equipmentButton = equipmentGui:FindFirstChild("EquipmentButton")
+		if equipmentButton then
+			print("EquipmentButton Visible before:", equipmentButton.Visible)
+			equipmentButton.Visible = false
+			print("EquipmentButton Visible after:", equipmentButton.Visible)
+		end
+
+		-- Check if it gets re-enabled
+		task.delay(0.1, function()
+			if equipmentGui and equipmentGui.Parent then
+				print("EquipmentGui Enabled 0.1s later:", equipmentGui.Enabled)
+			end
+			if equipmentButton and equipmentButton.Parent then
+				print("EquipmentButton Visible 0.1s later:", equipmentButton.Visible)
+			end
+		end)
+	else
+		print("Equipment GUI not found")
+	end
+end)
+
+showMenusEvent.OnClientEvent:Connect(function()
+	print("ShowGameMenusEvent received - showing game menus")
+	local shopGui = playerGui:FindFirstChild("ShopGui")
+	local equipmentGui = playerGui:FindFirstChild("EquipmentGui")
+
+	if shopGui then 
+		shopGui.Enabled = true 
+		print("Shop GUI enabled")
+
+		-- Also show the individual button
+		local shopButton = shopGui:FindFirstChild("ShopButton")
+		if shopButton then
+			shopButton.Visible = true
+			print("Shop button made visible")
+		end
+	end
+
+	if equipmentGui then 
+		equipmentGui.Enabled = true 
+		print("Equipment GUI enabled")
+
+		-- Also show the individual button
+		local equipmentButton = equipmentGui:FindFirstChild("EquipmentButton")
+		if equipmentButton then
+			equipmentButton.Visible = true
+			print("Equipment button made visible")
+		end
+	end
+end)

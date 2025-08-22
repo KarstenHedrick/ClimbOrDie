@@ -1,0 +1,54 @@
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local deathGuiEvent = ReplicatedStorage:WaitForChild("ShowDeathGuiEvent")
+
+local gui = script.Parent
+print("DeathAlertScript: GUI found:", gui.Name)
+
+local alert = gui:WaitForChild("DeathAlert") -- ImageLabel
+print("DeathAlertScript: DeathAlert found:", alert.Name)
+
+-- Function to show the death alert
+local function showDeathAlert()
+	print("DeathAlertScript: Starting death alert animation")
+	alert.Visible = true
+	alert.ImageTransparency = 1
+
+	local sound = alert:FindFirstChild("AlertSound")
+	if sound then
+		sound:Play()
+		print("DeathAlertScript: Alert sound played")
+	else
+		print("DeathAlertScript: No AlertSound found")
+	end
+
+	local fadeIn = TweenService:Create(alert, TweenInfo.new(0.5), {
+		ImageTransparency = 0
+	})
+	fadeIn:Play()
+	fadeIn.Completed:Wait()
+
+	wait(2)
+
+	local fadeOut = TweenService:Create(alert, TweenInfo.new(1.2), {
+		ImageTransparency = 1
+	})
+	fadeOut:Play()
+	fadeOut.Completed:Wait()
+
+	alert.Visible = false
+	print("Death alert hidden.")
+end
+
+deathGuiEvent.OnClientEvent:Connect(function()
+	print("DeathAlertScript: ShowDeathGuiEvent received!")
+	gui.Enabled = true
+	print("DeathAlertScript: GUI enabled")
+
+	-- Fade in/out GasAlert before disabling GUI
+	showDeathAlert()
+
+	gui.Enabled = false
+	print("DeathAlertScript: GUI disabled")
+end)
+

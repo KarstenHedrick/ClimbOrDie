@@ -1,0 +1,219 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local button = script.Parent
+local readyEvent = ReplicatedStorage:WaitForChild("PlayerReadyEvent")
+local hideLobbyEvent = ReplicatedStorage:WaitForChild("HideLobbyUIEvent")
+local showLobbyEvent = ReplicatedStorage:WaitForChild("ShowLobbyUIEvent")
+local countdownEvent = ReplicatedStorage:WaitForChild("GasCountdownBroadcastEvent")
+
+-- Ensure gameEndedEvent exists
+local gameEndedEvent = ReplicatedStorage:FindFirstChild("GameEndedEvent")
+if not gameEndedEvent then
+	gameEndedEvent = Instance.new("RemoteEvent")
+	gameEndedEvent.Name = "GameEndedEvent"
+	gameEndedEvent.Parent = ReplicatedStorage
+end
+
+-- NEW: RemoteEvent to check game state
+local checkGameStateEvent = ReplicatedStorage:FindFirstChild("CheckGameStateEvent")
+if not checkGameStateEvent then
+	checkGameStateEvent = Instance.new("RemoteEvent")
+	checkGameStateEvent.Name = "CheckGameStateEvent"
+	checkGameStateEvent.Parent = ReplicatedStorage
+end
+
+-- State tracking
+local isGameInProgress = false
+local isReady = false
+
+-- Replace these with your uploaded asset IDs
+local readyImage = "rbxassetid://127341725255221" -- default image
+local readiedImage = "rbxassetid://81002750525177" -- after clicked
+
+-- NEW: Handle game state response from server
+checkGameStateEvent.OnClientEvent:Connect(function(gameInProgress)
+    isGameInProgress = gameInProgress
+    print("ReadyButtonScript: Received game state from server - Game in progress:", isGameInProgress)
+end)
+
+-- Function to update button state
+local function updateButtonState(ready)
+    isReady = ready
+    button.Image = ready and readiedImage or readyImage
+    button.Active = not ready
+end
+
+-- Initialize button state
+button.Image = readyImage
+button.Active = true
+
+button.MouseButton1Click:Connect(function()
+    if not isReady then -- Only allow clicking if not ready
+        readyEvent:FireServer()
+        -- Don't update state here, wait for server confirmation
+    end
+end)
+
+-- Listen for ready state updates from server
+readyEvent.OnClientEvent:Connect(function(ready)
+    updateButtonState(ready)
+end)
+
+-- NEW: Handle game ended events to reset PlayerStatus
+gameEndedEvent.OnClientEvent:Connect(function()
+    print("ReadyButtonScript: Game ended - resetting PlayerStatus")
+    
+    local gui = button:FindFirstAncestorOfClass("ScreenGui")
+    if gui then
+        local playerStatus = gui:FindFirstChild("PlayerStatus")
+        if playerStatus then
+            playerStatus.Text = "WAITING FOR PLAYERS"
+            playerStatus.Visible = true
+            print("ReadyButtonScript: Reset PlayerStatus to 'WAITING FOR PLAYERS' after game end")
+        end
+    end
+end)
+
+-- NEW: Handle countdown events to show "Match in Progress" text
+countdownEvent.OnClientEvent:Connect(function(duration)
+    print("ReadyButtonScript: Received countdown event with duration:", duration)
+    
+    if typeof(duration) ~= "number" or duration <= 0 then
+        return
+    end
+    
+    -- Show "Match in Progress" text in PlayerStatus
+    local gui = button:FindFirstAncestorOfClass("ScreenGui")
+    if gui then
+        local playerStatus = gui:FindFirstChild("PlayerStatus")
+        if playerStatus then
+            playerStatus.Text = "MATCH IN PROGRESS"
+            playerStatus.Visible = true
+            print("ReadyButtonScript: Updated PlayerStatus to 'MATCH IN PROGRESS'")
+            
+            -- Set a timer to update text when countdown ends
+            task.delay(duration, function()
+                if playerStatus and playerStatus.Parent then
+                    playerStatus.Text = "GAS RISING - NO MORE JOINING"
+                    print("ReadyButtonScript: Updated PlayerStatus to 'GAS RISING - NO MORE JOINING'")
+                end
+            end)
+        end
+    end
+end)
+
+-- Hide entire lobby GUI when game starts
+hideLobbyEvent.OnClientEvent:Connect(function()
+	print("ReadyButtonScript: HideLobbyUIEvent received - hiding lobby GUI")
+	local gui = button:FindFirstAncestorOfClass("ScreenGui")
+	if gui then
+		print("Found lobby GUI:", gui.Name, "Setting Enabled to false")
+		print("Current Enabled state:", gui.Enabled)
+		gui.Enabled = false
+		button.Visible = false
+		print("Lobby GUI hidden, new Enabled state:", gui.Enabled, "ReadyButton visible:", button.Visible)
+		
+		-- Check if it gets re-enabled
+		task.delay(0.1, function()
+			if gui and gui.Parent then
+				print("LobbyGui Enabled 0.1s later:", gui.Enabled)
+			end
+		end)
+		
+		-- Also try hiding individual elements
+		local readyButton = gui:FindFirstChild("ReadyButton")
+		local countdownLabel = gui:FindFirstChild("GasCountdownLabel")
+		local playerStatus = gui:FindFirstChild("PlayerStatus")
+		
+		if readyButton then
+			print("ReadyButton Visible before:", readyButton.Visible)
+			readyButton.Visible = false
+			print("ReadyButton Visible after:", readyButton.Visible)
+		end
+		if countdownLabel then
+			print("GasCountdownLabel Visible before:", countdownLabel.Visible)
+			countdownLabel.Visible = false
+			print("GasCountdownLabel Visible after:", countdownLabel.Visible)
+		end
+		if playerStatus then
+			print("PlayerStatus Visible before:", playerStatus.Visible)
+			playerStatus.Visible = false
+			print("PlayerStatus Visible after:", playerStatus.Visible)
+		end
+	else
+		print("Could not find lobby GUI to hide")
+		print("Button parent:", button.Parent and button.Parent.Name or "nil")
+		print("Button ancestor:", button:FindFirstAncestorOfClass("ScreenGui"))
+	end
+end)
+
+showLobbyEvent.OnClientEvent:Connect(function()
+    print("ReadyButtonScript: ShowLobbyUIEvent received - requesting game state from server")
+    
+    -- Request current game state from server
+    checkGameStateEvent:FireServer()
+    
+    -- Wait a moment for the server response, then process the event
+    task.wait(0.1)
+    
+    local gui = button:FindFirstAncestorOfClass("ScreenGui")
+    if gui then
+        print("ReadyButtonScript: Found lobby GUI:", gui.Name)
+        
+        -- Use the server-provided game state
+        if isGameInProgress then
+            print("ReadyButtonScript: Game is in progress - keeping ReadyButton hidden")
+            -- Game is active - ReadyButton should NEVER be visible
+            gui.Enabled = false
+            button.Visible = false
+            return
+        else
+            print("ReadyButtonScript: Game not in progress - showing ReadyButton")
+            -- Game is not active - show the ReadyButton
+            gui.Enabled = true
+            button.Visible = true
+        end
+        
+        -- Reset PlayerStatus to default text when returning to lobby
+        local playerStatus = gui:FindFirstChild("PlayerStatus")
+        if playerStatus then
+            playerStatus.Text = "WAITING FOR PLAYERS"
+            playerStatus.Visible = true
+            print("ReadyButtonScript: Reset PlayerStatus to 'WAITING FOR PLAYERS'")
+        else
+            print("ReadyButtonScript: WARNING - PlayerStatus not found!")
+        end
+    else
+        print("ReadyButtonScript: ERROR - Could not find lobby GUI!")
+    end
+    
+    print("ReadyButtonScript: ShowLobbyUIEvent processed")
+end)
+
+-- Initialize GUI state - start hidden since this is only for lobby players during games
+local guiHidden = true -- Start hidden
+
+-- DEBUG: Check if we can find all necessary elements
+task.spawn(function()
+    task.wait(1) -- Wait a moment for everything to load
+    
+    local gui = button:FindFirstAncestorOfClass("ScreenGui")
+    if gui then
+        print("ReadyButtonScript: Initialization check - Found lobby GUI:", gui.Name)
+        
+        local playerStatus = gui:FindFirstChild("PlayerStatus")
+        if playerStatus then
+            print("ReadyButtonScript: Initialization check - PlayerStatus found:", playerStatus.Name)
+        else
+            print("ReadyButtonScript: Initialization check - WARNING: PlayerStatus not found!")
+        end
+        
+        local readyButton = gui:FindFirstChild("ReadyButton")
+        if readyButton then
+            print("ReadyButtonScript: Initialization check - ReadyButton found:", readyButton.Name)
+        else
+            print("ReadyButtonScript: Initialization check - WARNING: ReadyButton not found!")
+        end
+    else
+        print("ReadyButtonScript: Initialization check - ERROR: Could not find lobby GUI!")
+    end
+end)

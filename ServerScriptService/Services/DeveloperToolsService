@@ -1,0 +1,730 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local giveGoldEvent = ReplicatedStorage:WaitForChild("GiveGoldEvent")
+local winsStore = DataStoreService:GetDataStore("PlayerWinsStore")
+
+local devFeedbackEvent = ReplicatedStorage:WaitForChild("DeveloperFeedbackEvent")
+
+local DeveloperToolsService = {}
+
+-- Developer whitelist (names or userIds)
+local authorizedUsers = {
+	["Karstzilla"] = true,
+	[8924611080] = true,
+	[4919308336] = true
+}
+
+-- Game ownership check
+local CREATOR_USER_ID = game.CreatorId
+local IS_GROUP_GAME = game.CreatorType == Enum.CreatorType.Group
+
+-- Leaderboards to wipe
+local winStore = DataStoreService:GetOrderedDataStore("GlobalWinsLeaderboard")
+local allTimeStore = DataStoreService:GetOrderedDataStore("GlobalBestTime_Map_SkyRise")
+local weeklyPrefix = "WeeklyBestTime_Map_SkyRise_"
+
+-- Jungle map stores
+local jungleAllTimeStore = DataStoreService:GetOrderedDataStore("GlobalBestTime_Map_Jungle")
+local jungleWeeklyPrefix = "WeeklyBestTime_Map_Jungle_"
+
+-- Is the player a developer?
+function DeveloperToolsService.IsAuthorized(player)
+	return authorizedUsers[player.Name] or authorizedUsers[player.UserId]
+end
+
+-- Clear OrderedDataStore keys
+local function clearOrderedStore(store)
+	print("Clearing store:", store.Name)
+	local pages = store:GetSortedAsync(false, 100)
+	local entries = pages:GetCurrentPage()
+	for _, entry in ipairs(entries) do
+		store:RemoveAsync(entry.key)
+		print("Removed:", entry.key)
+	end
+end
+
+-- Clear a player’s inventory
+local function waitForInventory(player)
+	local inventory = player:FindFirstChild("Inventory")
+	if not inventory then
+		inventory = player:WaitForChild("Inventory", 5)
+	end
+	return inventory
+end
+
+local function clearInventory(player)
+	local inventory = waitForInventory(player)
+	if not inventory then return end
+
+	-- Clear equipped values
+	if inventory:FindFirstChild("EquippedEmote") then
+		inventory.EquippedEmote.Value = ""
+	end
+	if inventory:FindFirstChild("EquippedPowerUp") then
+		inventory.EquippedPowerUp.Value = ""
+	end
+	if inventory:FindFirstChild("EquippedGlow") then
+		inventory.EquippedGlow.Value = ""
+	end
+
+	-- Clear item folders
+	local foldersToClear = { "OwnedEmotes", "OwnedPowerUps", "OwnedUpgrades", "OwnedGlows" }
+	for _, folderName in ipairs(foldersToClear) do
+		local folder = inventory:FindFirstChild(folderName)
+		if folder then
+			for _, item in ipairs(folder:GetChildren()) do
+				item:Destroy()
+			end
+		end
+	end
+end
+
+local function cleanDuplicateGlows(folder)
+	local seen = {}
+	for _, child in ipairs(folder:GetChildren()) do
+		if seen[child.Name] then
+			child:Destroy()
+		else
+			seen[child.Name] = true
+		end
+	end
+end
+
+-- Initialization
+function DeveloperToolsService.Init()
+	-- Give Gold
+	giveGoldEvent.OnServerEvent:Connect(function(player, amount)
+		if not DeveloperToolsService.IsAuthorized(player) then return end
+
+		local stats = player:FindFirstChild("leaderstats")
+		local gold = stats and stats:FindFirstChild("Gold")
+		if gold and typeof(amount) == "number" and amount > 0 then
+			gold.Value += amount
+		end
+	end)
+
+	-- Chat Commands
+	Players.PlayerAdded:Connect(function(player)
+		if (IS_GROUP_GAME and player:GetRankInGroup(CREATOR_USER_ID) >= 255)
+			or (not IS_GROUP_GAME and player.UserId == CREATOR_USER_ID)
+			or DeveloperToolsService.IsAuthorized(player) then
+
+			player.Chatted:Connect(function(msg)
+				local originalMsg = msg -- preserve original
+				msg = msg:lower() -- for command detection only
+
+				if msg == "!resettimes" then
+					print("Resetting time leaderboards by", player.Name)
+					pcall(function()
+						clearOrderedStore(allTimeStore)
+
+						local weekKey = os.date("Week_%Y_%U")
+						local weeklyStore = DataStoreService:GetOrderedDataStore(weeklyPrefix .. weekKey)
+						clearOrderedStore(weeklyStore)
+					end)
+					print("Time leaderboard reset complete.")
+				end
+
+				-- Give gold to another player: !givegoldto Username 100
+				if msg:match("^!givegoldto%s+%w+%s+%d+$") then
+					local targetName, amountStr = originalMsg:match("^!givegoldto%s+(%w+)%s+(%d+)$")
+					local amount = tonumber(amountStr)
+
+					if targetName and amount and amount > 0 then
+						local targetPlayer = Players:FindFirstChild(targetName)
+						if targetPlayer then
+							local stats = targetPlayer:FindFirstChild("leaderstats")
+							local gold = stats and stats:FindFirstChild("Gold")
+							if gold then
+								gold.Value += amount
+								print(player.Name .. " gave " .. amount .. " gold to " .. targetPlayer.Name)
+							end
+						else
+							warn("Player not found: " .. tostring(targetName))
+						end
+					end
+				end
+
+				if msg == "!clearinventory" then
+					clearInventory(player)
+					print(player.Name .. "'s inventory was cleared.")
+				end
+
+				if msg:match("^!givegold%s+%d+$") then
+					local amount = tonumber(msg:match("%d+"))
+					if amount and amount > 0 then
+						local stats = player:FindFirstChild("leaderstats")
+						local gold = stats and stats:FindFirstChild("Gold")
+						if gold then
+							gold.Value += amount
+							print(player.Name .. " received " .. amount .. " gold via chat command.")
+						end
+					end
+				end
+
+				if msg:match("^!setgold%s+%d+$") then
+					local amount = tonumber(msg:match("%d+"))
+					if amount and amount >= 0 then
+						local stats = player:FindFirstChild("leaderstats")
+						local gold = stats and stats:FindFirstChild("Gold")
+						if gold then
+							gold.Value = amount
+
+							-- Save player data
+							local PlayerDataService = require(game.ServerScriptService.Services:WaitForChild("PlayerDataService"))
+							if PlayerDataService and PlayerDataService.Save then
+								PlayerDataService.Save(player)
+							end
+
+							print(player.Name .. "'s gold was set to " .. amount)
+						end
+					end
+				end
+
+				if msg == "!clearallwins" then
+					print("Clearing all wins data by", player.Name)
+
+					pcall(function()
+						-- Clear OrderedDataStore
+						clearOrderedStore(winStore)
+
+						-- Optionally, wipe winsStore for active players (you can’t get all players ever saved, so this only clears those in-server)
+						for _, plr in ipairs(Players:GetPlayers()) do
+							local leaderstats = plr:FindFirstChild("leaderstats")
+							local wins = leaderstats and leaderstats:FindFirstChild("Wins")
+							if wins then
+								wins.Value = 0
+							end
+
+							pcall(function()
+								winsStore:SetAsync(plr.UserId, 0)
+							end)
+						end
+					end)
+
+					print("All wins cleared from leaderboard and in-server players.")
+				end
+
+				if msg:match("^!setwins%s+%d+$") then
+					local amount = tonumber(msg:match("%d+"))
+					if amount and amount >= 0 then
+						local stats = player:FindFirstChild("leaderstats")
+						local wins = stats and stats:FindFirstChild("Wins")
+						if wins then
+							wins.Value = amount
+
+							-- Update the DataStore leaderboard immediately
+							pcall(function()
+								winStore:SetAsync(tostring(player.UserId), amount)
+							end)
+
+							-- Save player data
+							local PlayerDataService = require(game.ServerScriptService.Services:WaitForChild("PlayerDataService"))
+							if PlayerDataService and PlayerDataService.Save then
+								PlayerDataService.Save(player)
+							end
+
+							print(player.Name .. "'s wins were set to " .. amount .. " and leaderboard updated")
+
+							-- Trigger immediate leaderboard refresh
+							-- Use a RemoteEvent to signal the LeaderboardUpdateService to refresh
+							local refreshEvent = ReplicatedStorage:FindFirstChild("ForceLeaderboardRefreshEvent")
+							if not refreshEvent then
+								refreshEvent = Instance.new("RemoteEvent")
+								refreshEvent.Name = "ForceLeaderboardRefreshEvent"
+								refreshEvent.Parent = ReplicatedStorage
+							end
+							refreshEvent:FireAllClients()
+						end
+					end
+				end
+
+				if msg:match('^!giveupgrade') then
+					-- Re-parse from original message to preserve case
+					local upgradeName = originalMsg:match('^!giveupgrade%s+"(.+)"$') or originalMsg:match("^!giveupgrade%s+(%S+)$")
+					if upgradeName and #upgradeName > 0 then
+						local inventory = waitForInventory(player)
+						if not inventory then return end
+
+						local upgrades = inventory:FindFirstChild("OwnedUpgrades")
+						if upgrades and not upgrades:FindFirstChild(upgradeName) then
+							local val = Instance.new("StringValue")
+							val.Name = upgradeName
+							val.Parent = upgrades
+
+							print(player.Name .. " was given upgrade: " .. upgradeName)
+
+							-- FIRE REFRESH GUI EVENT
+							local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshUpgradeGuiEvent")
+							if refreshEvent then
+								refreshEvent:FireClient(player)
+							end
+						else
+							print("Upgrade already exists or missing upgrades folder.")
+						end
+					end
+				end
+
+				if msg == "!clearduplicateglows" then
+					local inventory = waitForInventory(player)
+					if not inventory then return end
+
+					local glows = inventory:FindFirstChild("OwnedGlows")
+					if glows then
+						cleanDuplicateGlows(glows)
+						print("Duplicates removed from OwnedGlows for " .. player.Name)
+					end
+				end
+
+				if msg == "!refreshleaderboards" then
+					-- Use a RemoteEvent to signal the LeaderboardUpdateService to refresh
+					local refreshEvent = ReplicatedStorage:FindFirstChild("ForceLeaderboardRefreshEvent")
+					if not refreshEvent then
+						refreshEvent = Instance.new("RemoteEvent")
+						refreshEvent.Name = "ForceLeaderboardRefreshEvent"
+						refreshEvent.Parent = ReplicatedStorage
+					end
+					refreshEvent:FireAllClients()
+					print("Leaderboards refresh triggered by " .. player.Name)
+				end
+
+				-- Give any glow effect: !giveglow GlowName
+				if msg:match("^!giveglow%s+%w+$") then
+					local glowName = originalMsg:match("^!giveglow%s+(%w+)$")
+					if glowName and #glowName > 0 then
+						local inventory = waitForInventory(player)
+						if not inventory then return end
+
+						local glows = inventory:FindFirstChild("OwnedGlows")
+						if glows and not glows:FindFirstChild(glowName) then
+							local val = Instance.new("StringValue")
+							val.Name = glowName
+							val.Parent = glows
+
+							print(player.Name .. " was given " .. glowName)
+
+							-- Refresh inventory GUI
+							local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshInventoryEvent")
+							if refreshEvent then
+								refreshEvent:FireClient(player, "Glow")
+							end
+						else
+							print(glowName .. " already exists or missing OwnedGlows folder.")
+						end
+					end
+				end
+
+				-- Legacy command for backward compatibility
+				if msg == "!giveshadowglow" then
+					local inventory = waitForInventory(player)
+					if not inventory then return end
+
+					local glows = inventory:FindFirstChild("OwnedGlows")
+					if glows and not glows:FindFirstChild("ShadowGlow") then
+						local val = Instance.new("StringValue")
+						val.Name = "ShadowGlow"
+						val.Parent = glows
+
+						print(player.Name .. " was given ShadowGlow")
+
+						-- Refresh inventory GUI
+						local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshInventoryEvent")
+						if refreshEvent then
+							refreshEvent:FireClient(player, "Glow")
+						end
+					else
+						print("ShadowGlow already exists or missing OwnedGlows folder.")
+					end
+				end
+
+				-- Give glow to another player: !giveglowplayer Username GlowName
+				if msg:match("^!giveglowplayer%s+%w+%s+%w+$") then
+					local targetName, glowName = originalMsg:match("^!giveglowplayer%s+(%w+)%s+(%w+)$")
+					if targetName and glowName and #glowName > 0 then
+						local targetPlayer = Players:FindFirstChild(targetName)
+						if targetPlayer then
+							local inventory = waitForInventory(targetPlayer)
+							if inventory then
+								local glows = inventory:FindFirstChild("OwnedGlows")
+								if glows and not glows:FindFirstChild(glowName) then
+									local val = Instance.new("StringValue")
+									val.Name = glowName
+									val.Parent = glows
+
+									print(player.Name .. " gave " .. glowName .. " to " .. targetPlayer.Name)
+
+									-- Refresh inventory GUI for target player
+									local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshInventoryEvent")
+									if refreshEvent then
+										refreshEvent:FireClient(targetPlayer, "Glow")
+									end
+								else
+									print(glowName .. " already exists or missing OwnedGlows folder for " .. targetPlayer.Name)
+								end
+							else
+								print("Could not load inventory for " .. targetPlayer.Name)
+							end
+						else
+							warn("Player not found: " .. tostring(targetName))
+						end
+					end
+				end
+
+				-- Remove a specific item: !removeitem ShadowGlow or !removeitem "Slow Fall"
+				if msg:match('^!removeitem%s+"[^"]*"$') or msg:match("^!removeitem%s+%S+$") then
+					local itemName = originalMsg:match('^!removeitem%s+"([^"]*)"$') or originalMsg:match("^!removeitem%s+(%S+)$")
+					if itemName and #itemName > 0 then
+						local inventory = waitForInventory(player)
+						if not inventory then return end
+
+						-- Check all item folders
+						local foldersToCheck = { "OwnedEmotes", "OwnedPowerUps", "OwnedUpgrades", "OwnedGlows" }
+						local itemFound = false
+						local itemCategory = nil
+
+						for _, folderName in ipairs(foldersToCheck) do
+							local folder = inventory:FindFirstChild(folderName)
+							if folder then
+								local item = folder:FindFirstChild(itemName)
+								if item then
+									item:Destroy()
+									itemFound = true
+									itemCategory = folderName
+									break
+								end
+							end
+						end
+
+						if itemFound then
+							print(player.Name .. " removed item: " .. itemName)
+
+							-- Refresh appropriate GUI based on category
+							local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshInventoryEvent")
+							if refreshEvent then
+								if itemCategory == "OwnedGlows" then
+									refreshEvent:FireClient(player, "Glow")
+								elseif itemCategory == "OwnedEmotes" then
+									refreshEvent:FireClient(player, "Emote")
+								elseif itemCategory == "OwnedPowerUps" then
+									refreshEvent:FireClient(player, "PowerUp")
+								elseif itemCategory == "OwnedUpgrades" then
+									refreshEvent:FireClient(player, "Upgrade")
+								end
+							end
+						else
+							print("Item not found: " .. itemName)
+						end
+					end
+				end
+
+				-- Give upgrade to a specific player: !giveupgradeplayer Username "UpgradeName" or !giveupgradeplayer Username UpgradeName
+				if msg:match("^!giveupgradeplayer%s+%w+%s+.+$") then
+					-- Enhanced parsing to handle quotes properly
+					local targetName = originalMsg:match("^!giveupgradeplayer%s+(%w+)%s+(.+)$")
+					local upgradeName = originalMsg:match("^!giveupgradeplayer%s+%w+%s+(.+)$")
+
+					-- Remove quotes if present
+					if upgradeName then
+						upgradeName = upgradeName:gsub('^"', ''):gsub('"$', '')
+					end
+
+					if targetName and upgradeName and #upgradeName > 0 then
+						local targetPlayer = Players:FindFirstChild(targetName)
+						if targetPlayer then
+							local inventory = waitForInventory(targetPlayer)
+							if inventory then
+								local upgrades = inventory:FindFirstChild("OwnedUpgrades")
+								if upgrades and not upgrades:FindFirstChild(upgradeName) then
+									local val = Instance.new("StringValue")
+									val.Name = upgradeName
+									val.Parent = upgrades
+
+									print(player.Name .. " gave upgrade '" .. upgradeName .. "' to " .. targetPlayer.Name)
+
+									-- FIRE REFRESH GUI EVENT for the target player
+									local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshUpgradeGuiEvent")
+									if refreshEvent then
+										refreshEvent:FireClient(targetPlayer)
+									end
+								else
+									print("Upgrade already exists or missing upgrades folder for " .. targetPlayer.Name)
+								end
+							else
+								print("Could not load inventory for " .. targetPlayer.Name)
+							end
+						else
+							warn("Player not found: " .. tostring(targetName))
+						end
+					end
+				end
+
+				-- Remove upgrade from yourself: !removeupgrade "UpgradeName" or !removeupgrade UpgradeName
+				if msg:match('^!removeupgrade%s+.+$') then
+					-- Enhanced parsing to handle quotes properly
+					local upgradeName = originalMsg:match('^!removeupgrade%s+(.+)$')
+					if upgradeName then
+						-- Remove quotes if present
+						upgradeName = upgradeName:gsub('^"', ''):gsub('"$', '')
+					end
+
+					if upgradeName and #upgradeName > 0 then
+						local inventory = waitForInventory(player)
+						if not inventory then return end
+
+						local upgrades = inventory:FindFirstChild("OwnedUpgrades")
+						if upgrades then
+							local upgradeToRemove = upgrades:FindFirstChild(upgradeName)
+							if upgradeToRemove then
+								upgradeToRemove:Destroy()
+								print(player.Name .. " removed upgrade: " .. upgradeName)
+
+								-- FIRE REFRESH GUI EVENT
+								local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshUpgradeGuiEvent")
+								if refreshEvent then
+									refreshEvent:FireClient(player)
+								end
+							else
+								print("Upgrade '" .. upgradeName .. "' not found in inventory.")
+							end
+						else
+							print("No upgrades folder found in inventory.")
+						end
+					end
+				end
+
+				-- Remove upgrade from a specific player: !removeupgradeplayer Username "UpgradeName" or !removeupgradeplayer Username UpgradeName
+				if msg:match("^!removeupgradeplayer%s+%w+%s+.+$") then
+					-- Enhanced parsing to handle quotes properly
+					local targetName = originalMsg:match("^!removeupgradeplayer%s+(%w+)%s+(.+)$")
+					local upgradeName = originalMsg:match("^!removeupgradeplayer%s+%w+%s+(.+)$")
+
+					-- Remove quotes if present
+					if upgradeName then
+						upgradeName = upgradeName:gsub('^"', ''):gsub('"$', '')
+					end
+
+					if targetName and upgradeName and #upgradeName > 0 then
+						local targetPlayer = Players:FindFirstChild(targetName)
+						if targetPlayer then
+							local inventory = waitForInventory(targetPlayer)
+							if inventory then
+								local upgrades = inventory:FindFirstChild("OwnedUpgrades")
+								if upgrades then
+									local upgradeToRemove = upgrades:FindFirstChild(upgradeName)
+									if upgradeToRemove then
+										upgradeToRemove:Destroy()
+										print(player.Name .. " removed upgrade '" .. upgradeName .. "' from " .. targetPlayer.Name)
+
+										-- FIRE REFRESH GUI EVENT for the target player
+										local refreshEvent = ReplicatedStorage:FindFirstChild("RefreshUpgradeGuiEvent")
+										if refreshEvent then
+											refreshEvent:FireClient(targetPlayer)
+										end
+									else
+										print("Upgrade '" .. upgradeName .. "' not found in " .. targetPlayer.Name .. "'s inventory.")
+									end
+								else
+									print("No upgrades folder found in " .. targetPlayer.Name .. "'s inventory.")
+								end
+							else
+								print("Could not load inventory for " .. targetPlayer.Name)
+							end
+						else
+							warn("Player not found: " .. tostring(targetName))
+						end
+					end
+				end
+
+				-- Force end the current game: !forceendgame
+				if msg == "!forceendgame" then
+					print(player.Name .. " is forcing the game to end")
+
+					-- Get the current map model
+					local GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+					local GameFlowService = require(script.Parent:WaitForChild("GameFlowService"))
+					local currentMap = GameStateService.GetCurrentMap()
+
+					if currentMap then
+						print("Force ending game with map:", currentMap.Name)
+						GameFlowService.EndGameHardReset(currentMap)
+					else
+						print("No current map found, but resetting game state anyway")
+						GameFlowService.EndGameHardReset(nil)
+					end
+
+					-- Send a message to all players
+					local UIService = require(script.Parent:WaitForChild("UIService"))
+					UIService.SendMessageAll("Game was force ended by an administrator.")
+				end
+
+				-- Sync donation leaderboard for all players: !syncdonations
+				if msg == "!syncdonations" then
+					print(player.Name .. " is syncing donation leaderboard for all players")
+
+					local globalDonationStore = DataStoreService:GetOrderedDataStore("GlobalDonationLeaderboard")
+					local donatedStore = DataStoreService:GetDataStore("PlayerDonationStore")
+
+					-- Sync all current players' donation data to the leaderboard
+					for _, currentPlayer in pairs(Players:GetPlayers()) do
+						local leaderstats = currentPlayer:FindFirstChild("leaderstats")
+						if leaderstats then
+							local donated = leaderstats:FindFirstChild("TotalDonated")
+							if donated and donated.Value > 0 then
+								pcall(function()
+									globalDonationStore:SetAsync(tostring(currentPlayer.UserId), donated.Value)
+									print("Synced donation data for " .. currentPlayer.Name .. ": " .. donated.Value .. " Robux")
+								end)
+							end
+						end
+					end
+
+					-- Force refresh the leaderboard
+					local refreshEvent = ReplicatedStorage:FindFirstChild("ForceLeaderboardRefreshEvent")
+					if refreshEvent then
+						refreshEvent:FireAllClients()
+					end
+
+					print("Donation leaderboard sync complete")
+				end
+
+				-- Sync ALL donation data from PlayerDonationStore to GlobalDonationLeaderboard: !syncallDonations
+				if msg == "!syncallDonations" then
+					print(player.Name .. " is syncing ALL donation data from PlayerDonationStore to GlobalDonationLeaderboard")
+
+					local globalDonationStore = DataStoreService:GetOrderedDataStore("GlobalDonationLeaderboard")
+					local donatedStore = DataStoreService:GetDataStore("PlayerDonationStore")
+
+					local syncedCount = 0
+					local errorCount = 0
+
+					-- Sync current players from their leaderstats
+					for _, currentPlayer in pairs(Players:GetPlayers()) do
+						local leaderstats = currentPlayer:FindFirstChild("leaderstats")
+						if leaderstats then
+							local donated = leaderstats:FindFirstChild("TotalDonated")
+							if donated and donated.Value > 0 then
+								pcall(function()
+									globalDonationStore:SetAsync(tostring(currentPlayer.UserId), donated.Value)
+									syncedCount = syncedCount + 1
+									print("Synced donation data for " .. currentPlayer.Name .. ": " .. donated.Value .. " Robux")
+								end)
+							end
+						end
+					end
+
+					-- Also sync from PlayerDonationStore for any players not currently online
+					-- Note: This is limited by DataStore's inability to iterate through all keys
+					-- But we can sync known players from the current session
+
+					-- Force refresh the leaderboard
+					local refreshEvent = ReplicatedStorage:FindFirstChild("ForceLeaderboardRefreshEvent")
+					if refreshEvent then
+						refreshEvent:FireAllClients()
+					end
+
+					print("Synced " .. syncedCount .. " players' donation data to global leaderboard")
+				end
+
+				-- Give DonatorGlow to all current donors: !giveDonatorGlowToAll
+				if msg == "!giveDonatorGlowToAll" then
+					print(player.Name .. " is giving DonatorGlow to all current donors")
+
+					local GlowManager = require(game.ServerScriptService.Modules:WaitForChild("GlowManager"))
+					local givenCount = 0
+
+					for _, currentPlayer in pairs(Players:GetPlayers()) do
+						local leaderstats = currentPlayer:FindFirstChild("leaderstats")
+						if leaderstats then
+							local donated = leaderstats:FindFirstChild("TotalDonated")
+							if donated and donated.Value > 0 then
+								if not GlowManager.PlayerAlreadyOwnsGlow(currentPlayer, "DonatorGlow") then
+									GlowManager.GrantGlow(currentPlayer.UserId, "DonatorGlow")
+									givenCount = givenCount + 1
+									print("Gave DonatorGlow to " .. currentPlayer.Name .. " (donated " .. donated.Value .. " Robux)")
+								else
+									print(currentPlayer.Name .. " already has DonatorGlow")
+								end
+							end
+						end
+					end
+
+					print("Gave DonatorGlow to " .. givenCount .. " donors")
+				end
+
+				-- Clear and rebuild donation leaderboard: !rebuildDonationLeaderboard
+				if msg == "!rebuildDonationLeaderboard" then
+					print(player.Name .. " is rebuilding the donation leaderboard from scratch")
+
+					local globalDonationStore = DataStoreService:GetOrderedDataStore("GlobalDonationLeaderboard")
+					local donatedStore = DataStoreService:GetDataStore("PlayerDonationStore")
+
+					local syncedCount = 0
+
+					-- Clear the current leaderboard (this will remove all entries)
+					-- Note: We can't actually clear an OrderedDataStore, but we can overwrite entries
+
+					-- Rebuild from current players
+					for _, currentPlayer in pairs(Players:GetPlayers()) do
+						local leaderstats = currentPlayer:FindFirstChild("leaderstats")
+						if leaderstats then
+							local donated = leaderstats:FindFirstChild("TotalDonated")
+							if donated and donated.Value > 0 then
+								pcall(function()
+									globalDonationStore:SetAsync(tostring(currentPlayer.UserId), donated.Value)
+									syncedCount = syncedCount + 1
+									print("Added " .. currentPlayer.Name .. " to leaderboard: " .. donated.Value .. " Robux")
+								end)
+							end
+						end
+					end
+
+					-- Force refresh the leaderboard
+					local refreshEvent = ReplicatedStorage:FindFirstChild("ForceLeaderboardRefreshEvent")
+					if refreshEvent then
+						refreshEvent:FireAllClients()
+					end
+
+					print("Rebuilt donation leaderboard with " .. syncedCount .. " players")
+				end
+
+				-- Reset a specific player's times: !resetplayertimes Username
+				if msg:match("^!resetplayertimes%s+%w+$") then
+					local targetName = originalMsg:match("^!resetplayertimes%s+(%w+)$")
+
+					if targetName then
+						local targetPlayer = Players:FindFirstChild(targetName)
+						if targetPlayer then
+							-- Remove player's times from all time leaderboards
+							pcall(function()
+								-- Remove from all-time leaderboard
+								allTimeStore:RemoveAsync(tostring(targetPlayer.UserId))
+
+								-- Remove from weekly leaderboard
+								local weekKey = os.date("Week_%Y_%U")
+								local weeklyStore = DataStoreService:GetOrderedDataStore(weeklyPrefix .. weekKey)
+								weeklyStore:RemoveAsync(tostring(targetPlayer.UserId))
+
+								-- Remove from jungle all-time leaderboard
+								jungleAllTimeStore:RemoveAsync(tostring(targetPlayer.UserId))
+
+								-- Remove from jungle weekly leaderboard
+								local jungleWeekKey = os.date("Week_%Y_%U")
+								local jungleWeeklyStore = DataStoreService:GetOrderedDataStore(jungleWeeklyPrefix .. jungleWeekKey)
+								jungleWeeklyStore:RemoveAsync(tostring(targetPlayer.UserId))
+
+								print(player.Name .. " reset times for " .. targetPlayer.Name)
+								print("Removed from SkyRise and Jungle all-time and weekly leaderboards")
+							end)
+						else
+							warn("Player not found: " .. tostring(targetName))
+						end
+					end
+				end
+			end)
+		end
+	end)
+end
+
+return DeveloperToolsService

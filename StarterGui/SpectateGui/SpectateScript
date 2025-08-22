@@ -1,0 +1,303 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+local spectateGui = script.Parent
+local spectateButtonFrame = spectateGui:WaitForChild("SpectateButtonFrame")
+local spectateButton = spectateButtonFrame:WaitForChild("Spectate")
+local stopSpectateButton = spectateButtonFrame:WaitForChild("StopSpectate")
+
+local spectateTargetFrame = spectateGui:WaitForChild("SpectateTargetFrame")
+local currentTargetLabel = spectateTargetFrame:WaitForChild("CurrentTargetLabel")
+local spectatePreviousButton = spectateTargetFrame:WaitForChild("SpectatePrevious")
+local spectateNextButton = spectateTargetFrame:WaitForChild("SpectateNext")
+
+local spectateRequest = ReplicatedStorage:WaitForChild("SpectateRequestEvent")
+local aliveListEvent = ReplicatedStorage:WaitForChild("AlivePlayerListEvent")
+local enableSpectateGuiEvent = ReplicatedStorage:WaitForChild("EnableSpectateGuiEvent")
+local playerLeftEvent = ReplicatedStorage:WaitForChild("PlayerLeftEvent")
+local stopSpectateEvent = ReplicatedStorage:WaitForChild("ForceStopSpectatingEvent")
+local playerDiedEvent = ReplicatedStorage:WaitForChild("PlayerDiedWhileSpectatingEvent")
+local spectateStartedEvent = ReplicatedStorage:WaitForChild("SpectateStartedEvent")
+local spectateEndedEvent = ReplicatedStorage:WaitForChild("SpectateEndedEvent")
+
+local alivePlayers = {}
+local currentIndex = 1
+local isSpectating = false
+local currentSpectatedPlayer = nil
+local currentSpectatedPlayerDeathConnection = nil
+local originalCFrame = nil
+
+-- Default movement values
+local originalWalkSpeed = 16
+local originalJumpPower = 50
+
+-- Check if StreamingTarget is supported
+pcall(function()
+	local _ = workspace.StreamingTarget
+end)
+
+-- Show/hide Spectate GUI from server
+spectateButtonFrame.Visible = false
+spectateTargetFrame.Visible = false
+enableSpectateGuiEvent.OnClientEvent:Connect(function(show)
+	spectateButtonFrame.Visible = show
+	spectateTargetFrame.Visible = show
+	spectateButton.Visible = true
+	stopSpectateButton.Visible = false
+	currentTargetLabel.Text = ""
+	spectatePreviousButton.Visible = false
+	spectateNextButton.Visible = false
+
+	if not show then
+		alivePlayers = {}
+		currentIndex = 1
+		currentSpectatedPlayer = nil
+		isSpectating = false
+
+		if currentSpectatedPlayerDeathConnection then
+			currentSpectatedPlayerDeathConnection:Disconnect()
+			currentSpectatedPlayerDeathConnection = nil
+		end
+
+		stopSpectating()
+	end
+end)
+
+spectateButton.MouseButton1Click:Connect(function()
+	if not spectateButtonFrame.Visible then return end
+	spectateRequest:FireServer()
+end)
+
+stopSpectateButton.MouseButton1Click:Connect(function()
+	if not spectateButtonFrame.Visible then return end
+	stopSpectating()
+end)
+
+aliveListEvent.OnClientEvent:Connect(function(playersList)
+	alivePlayers = {}
+	for _, player in pairs(playersList) do
+		if typeof(player) == "Instance" and player:IsA("Player") then
+			table.insert(alivePlayers, player)
+		end
+	end
+
+	if #alivePlayers == 0 then return end
+	currentIndex = 1
+	startSpectating()
+end)
+
+-- Handle player death notifications from server
+playerDiedEvent.OnClientEvent:Connect(function(diedPlayer)
+	if not isSpectating then return end
+
+	-- Remove the dead player from our alive list
+	removePlayerFromAlive(diedPlayer)
+
+	-- If we were spectating the dead player, move to next
+	if currentSpectatedPlayer == diedPlayer then
+		spectateNext()
+	end
+
+	print("Player died while spectating:", diedPlayer.Name)
+end)
+
+local function removePlayerFromAlive(target)
+	for i, player in ipairs(alivePlayers) do
+		if player == target then
+			table.remove(alivePlayers, i)
+			if currentIndex > i then
+				currentIndex -= 1
+			end
+			break
+		end
+	end
+end
+
+function spectateNext()
+	for i = #alivePlayers, 1, -1 do
+		local p = alivePlayers[i]
+		if not p:IsDescendantOf(Players)
+			or not p.Character
+			or not p.Character:FindFirstChild("Humanoid")
+			or p.Character.Humanoid.Health <= 0 then
+			table.remove(alivePlayers, i)
+		end
+	end
+
+	if #alivePlayers == 0 then
+		stopSpectating()
+		return
+	end
+
+	currentIndex = (currentIndex > #alivePlayers) and 1 or currentIndex
+	local target = alivePlayers[currentIndex]
+	currentIndex = (currentIndex % #alivePlayers) + 1
+	currentSpectatedPlayer = target
+
+	if target and target.Character and target.Character:FindFirstChild("Humanoid") then
+		camera.CameraSubject = target.Character.Humanoid
+		camera.CameraType = Enum.CameraType.Custom
+
+		if currentSpectatedPlayerDeathConnection then
+			currentSpectatedPlayerDeathConnection:Disconnect()
+		end
+
+		local humanoid = target.Character:FindFirstChild("Humanoid")
+		if humanoid then
+			currentSpectatedPlayerDeathConnection = humanoid.Died:Connect(function()
+				if isSpectating and currentSpectatedPlayer == target then
+					task.wait(0.5)
+					spectateNext()
+				end
+			end)
+		end
+
+		localPlayer:GetPropertyChangedSignal("Parent"):Connect(function()
+			if isSpectating and currentSpectatedPlayer == target and not target:IsDescendantOf(Players) then
+				spectateNext()
+			end
+		end)
+
+		currentTargetLabel.Text = "Spectating " .. (target.Name or "Unknown")
+	end
+end
+
+function spectatePrevious()
+	for i = #alivePlayers, 1, -1 do
+		local p = alivePlayers[i]
+		if not p:IsDescendantOf(Players)
+			or not p.Character
+			or not p.Character:FindFirstChild("Humanoid")
+			or p.Character.Humanoid.Health <= 0 then
+			table.remove(alivePlayers, i)
+		end
+	end
+
+	if #alivePlayers == 0 then
+		stopSpectating()
+		return
+	end
+
+	-- Decrement index and wrap
+	currentIndex = (currentIndex - 2) % #alivePlayers + 1
+	local target = alivePlayers[currentIndex]
+	currentSpectatedPlayer = target
+
+	if target and target.Character and target.Character:FindFirstChild("Humanoid") then
+		camera.CameraSubject = target.Character.Humanoid
+		camera.CameraType = Enum.CameraType.Custom
+
+		if currentSpectatedPlayerDeathConnection then
+			currentSpectatedPlayerDeathConnection:Disconnect()
+		end
+
+		local humanoid = target.Character:FindFirstChild("Humanoid")
+		if humanoid then
+			currentSpectatedPlayerDeathConnection = humanoid.Died:Connect(function()
+				if isSpectating and currentSpectatedPlayer == target then
+					task.wait(0.5)
+					spectateNext()
+				end
+			end)
+		end
+
+		localPlayer:GetPropertyChangedSignal("Parent"):Connect(function()
+			if isSpectating and currentSpectatedPlayer == target and not target:IsDescendantOf(Players) then
+				spectateNext()
+			end
+		end)
+
+		currentTargetLabel.Text = "Spectating " .. (target.Name or "Unknown")
+	end
+end
+
+
+function startSpectating()
+	local char = localPlayer.Character
+	if not char then return end
+
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+
+	isSpectating = true
+	spectateButton.Visible = false
+	stopSpectateButton.Visible = true
+	spectatePreviousButton.Visible = true
+	spectateNextButton.Visible = true
+
+	if humanoid then
+		originalWalkSpeed = humanoid.WalkSpeed
+		originalJumpPower = humanoid.JumpPower
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
+	end
+
+	spectateStartedEvent:FireServer()
+	spectateNext()
+end
+
+function stopSpectating()
+	local char = localPlayer.Character
+	if not char then return end
+
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+
+	isSpectating = false
+	spectateButton.Visible = true
+	stopSpectateButton.Visible = false
+	currentTargetLabel.Text = ""
+	spectatePreviousButton.Visible = false
+	spectateNextButton.Visible = false
+
+	if humanoid then
+		humanoid.WalkSpeed = originalWalkSpeed
+		humanoid.JumpPower = originalJumpPower
+		camera.CameraSubject = humanoid
+		camera.CameraType = Enum.CameraType.Custom
+	end
+
+	if currentSpectatedPlayerDeathConnection then
+		currentSpectatedPlayerDeathConnection:Disconnect()
+		currentSpectatedPlayerDeathConnection = nil
+	end
+
+	spectateEndedEvent:FireServer()
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed or not isSpectating then return end
+
+	if input.KeyCode == Enum.KeyCode.E then
+		spectateNext()
+	elseif input.KeyCode == Enum.KeyCode.Q then
+		spectatePrevious()
+	end
+end)
+
+spectatePreviousButton.MouseButton1Click:Connect(function()
+	if isSpectating then
+		spectatePrevious()
+	end
+end)
+
+spectateNextButton.MouseButton1Click:Connect(function()
+	if isSpectating then
+		spectateNext()
+	end
+end)
+
+playerLeftEvent.OnClientEvent:Connect(function(leftPlayer)
+	if isSpectating then
+		removePlayerFromAlive(leftPlayer)
+		if currentSpectatedPlayer == leftPlayer then
+			spectateNext()
+		end
+	end
+end)
+
+stopSpectateEvent.OnClientEvent:Connect(function()
+	stopSpectating()
+end)

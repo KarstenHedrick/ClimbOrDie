@@ -1,0 +1,18 @@
+local Players = game:GetService("Players")
+
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function(character)
+		local root = character:WaitForChild("HumanoidRootPart")
+		local humanoid = character:WaitForChild("Humanoid")
+
+		-- Stabilize rotation periodically
+		while humanoid.Health > 0 and root and root.Parent do
+			-- Check for very high rotational velocity
+			local angular = root.RotVelocity
+			if angular.Magnitude > 5 then
+				root.RotVelocity = Vector3.zero
+			end
+			task.wait(0.1)
+		end
+	end)
+end)

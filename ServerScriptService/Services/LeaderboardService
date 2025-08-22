@@ -1,0 +1,284 @@
+local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
+local GlowManager = require(game.ServerScriptService.Modules:WaitForChild("GlowManager"))
+local PlayerDataService = require(game.ServerScriptService.Services:WaitForChild("PlayerDataService"))
+local GlowValidator = require(game.ServerScriptService.Modules:WaitForChild("GlowValidator"))
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RefreshInventoryEvent = ReplicatedStorage:WaitForChild("RefreshInventoryEvent")
+
+local dummyTemplate = ReplicatedStorage:WaitForChild("LeaderboardDummy")
+local dummySpots = workspace:WaitForChild("LeaderboardDummies")
+local RunService = game:GetService("RunService")
+
+local LeaderboardService = {}
+local orderedWinsStore = DataStoreService:GetOrderedDataStore("GlobalWinsLeaderboard")
+
+-- Fetch top win entries
+function LeaderboardService.GetTopWins(maxEntries)
+	local success, pages = pcall(function()
+		return orderedWinsStore:GetSortedAsync(false, maxEntries)
+	end)
+	return success and pages:GetCurrentPage() or nil
+end
+
+-- Resolve player name
+function LeaderboardService.ResolveUsername(userId)
+	local success, result = pcall(function()
+		return Players:GetNameFromUserIdAsync(userId)
+	end)
+	return success and result or "Unknown"
+end
+
+-- Initialize top users for a specific leaderboard
+function LeaderboardService.InitializeTopUsers(leaderboardKey: string, glowType: string)
+	local success, pages = pcall(function()
+		return DataStoreService:GetOrderedDataStore(leaderboardKey):GetSortedAsync(true, 3)
+	end)
+
+	if success and pages then
+		local topPlayers = {}
+		for _, entry in ipairs(pages:GetCurrentPage()) do
+			local userId = tonumber(entry.key)
+			if userId then
+				table.insert(topPlayers, userId)
+			end
+		end
+
+		-- Update glow permissions
+		GlowManager.UpdateTopPlayers(glowType, topPlayers)
+		print("[LeaderboardService] Updated top players for", glowType, ":", #topPlayers, "players")
+
+		if #topPlayers == 0 then
+			print("[LeaderboardService] Leaderboard", leaderboardKey, "is empty.")
+		end
+	else
+		warn("[LeaderboardService] Failed to read leaderboard:", leaderboardKey)
+	end
+end
+
+-- Revoke glow from all players except the top one
+function LeaderboardService.RevokeAllButTop(leaderboardKey: string, topUserId: number, glowName: string)
+	local success, pages = pcall(function()
+		return DataStoreService:GetOrderedDataStore(leaderboardKey):GetSortedAsync(true, 50)
+	end)
+
+	if not success or not pages then
+		warn("[LeaderboardService] Failed to fetch leaderboard for revoking")
+		return
+	end
+
+	for _, entry in pairs(pages:GetCurrentPage()) do
+		local userId = tonumber(entry.key)
+		if userId and userId ~= topUserId then
+			GlowManager.FullyRemoveGlow(userId, glowName, false)
+		end
+	end
+end
+
+-- Resolve avatar thumbnail
+function LeaderboardService.ResolveAvatar(userId)
+	local success, thumbUrl = pcall(function()
+		return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+	end)
+	return success and thumbUrl or nil
+end
+
+-- Format time for display
+function LeaderboardService.FormatMilliseconds(ms)
+	if not ms or typeof(ms) ~= "number" then return "N/A" end
+	local totalSeconds = ms / 1000
+	local minutes = math.floor(totalSeconds / 60)
+	local seconds = math.floor(totalSeconds % 60)
+	local milliseconds = math.floor((totalSeconds - math.floor(totalSeconds)) * 100)
+	return string.format("%02d:%02d.%02d", minutes, seconds, milliseconds)
+end
+
+-- Extract label references
+function LeaderboardService.GetLabelReferences(surfaceGui)
+	local names = {
+		"First", "Second", "Third", "Fourth", "Fifth",
+		"Sixth", "Seventh", "Eighth", "Ninth", "Tenth"
+	}
+	local labels = {}
+	for _, name in ipairs(names) do
+		local label = surfaceGui:FindFirstChild(name)
+		if label then
+			table.insert(labels, label)
+		else
+			warn("Missing label:", name)
+		end
+	end
+	return labels
+end
+
+-- Populate leaderboard UI
+function LeaderboardService.UpdateLeaderboardUI(entries, labels, formatFunc)
+	for rank, entry in ipairs(entries) do
+		local userId = tonumber(entry.key)
+		local statValue = tonumber(entry.value)
+		local name = LeaderboardService.ResolveUsername(userId)
+		local avatarUrl = LeaderboardService.ResolveAvatar(userId)
+
+		local label = labels[rank]
+		if label then
+			label.Text = formatFunc(rank, name, statValue)
+			local avatar = label:FindFirstChild("Avatar")
+			if avatar then
+				avatar.Image = avatarUrl or ""
+				avatar.Visible = avatarUrl ~= nil
+			end
+		end
+	end
+
+	-- Clear remaining labels
+	for i = #entries + 1, #labels do
+		local label = labels[i]
+		label.Text = ""
+		local avatar = label:FindFirstChild("Avatar")
+		if avatar then avatar.Visible = false end
+	end
+end
+
+-- Rotation function for the Leaderboard Dummies
+function LeaderboardService.RotateDummy(model: Model)
+	local primaryPart = model.PrimaryPart
+	if not primaryPart or not primaryPart:IsA("BasePart") then
+		warn("Cannot rotate dummy: Missing valid PrimaryPart")
+		return
+	end
+
+	local rotationSpeed = math.rad(1) -- radians per second (adjust for speed)
+
+	-- Coroutine so it doesn't block
+	coroutine.wrap(function()
+		while model and model.Parent do
+			local deltaTime = RunService.Heartbeat:Wait()
+			primaryPart.CFrame = primaryPart.CFrame * CFrame.Angles(0, rotationSpeed * deltaTime * 60, 0)
+		end
+	end)()
+end
+
+function LeaderboardService.SpawnLeaderboardDummy(folderName: string, userId: number?, glowName: string?)
+	local anchor = dummySpots:FindFirstChild(folderName)
+	if not anchor then 
+		warn("Missing anchor for", folderName) 
+		return 
+	end
+
+	-- Clear existing dummies
+	for _, child in anchor:GetChildren() do
+		child:Destroy()
+	end
+
+	local dummy = dummyTemplate:Clone()
+
+	if userId then
+		local success, username = pcall(function()
+			return Players:GetNameFromUserIdAsync(userId)
+		end)
+		dummy.Name = success and username or "DisplayAvatar"
+	else
+		dummy.Name = "DisplayAvatar"
+	end
+
+	-- Anchor all parts BEFORE parenting or moving it
+	for _, part in dummy:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Anchored = true
+			part.CanCollide = false
+		end
+	end
+
+	-- Set PrimaryPart before moving it
+	local root = dummy:FindFirstChild("HumanoidRootPart")
+	if root then
+		dummy.PrimaryPart = root
+
+		local anchorPos = anchor.Position
+		local lookAtTarget = workspace:WaitForChild("TotalWinsLeaderboard")
+
+		local lookPos = Vector3.new(lookAtTarget.Position.X, anchorPos.Y, lookAtTarget.Position.Z)
+		local faceCFrame = CFrame.lookAt(anchorPos, lookPos)
+
+		dummy:SetPrimaryPartCFrame(faceCFrame)
+	else
+		warn("Dummy is missing HumanoidRootPart")
+		return
+	end
+
+	-- Only now parent it to Workspace or anchor folder
+	dummy.Parent = anchor
+
+	-- Apply appearance
+	local humanoid = dummy:FindFirstChildOfClass("Humanoid")
+
+	if userId then
+		local success, desc = pcall(function()
+			return Players:GetHumanoidDescriptionFromUserId(userId)
+		end)
+		if success and humanoid then
+			humanoid:ApplyDescription(desc)
+		end
+	else
+		-- No user? Apply default gray humanoid description
+		if humanoid then
+			local defaultDesc = Instance.new("HumanoidDescription")
+			defaultDesc.HeadColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.TorsoColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightArmColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.LeftLegColor = Color3.fromRGB(100, 100, 100)
+			defaultDesc.RightLegColor = Color3.fromRGB(100, 100, 100)
+			humanoid:ApplyDescription(defaultDesc)
+		end
+	end
+
+	-- Apply glow if specified
+	if glowName and GlowManager and GlowManager.ApplyGlow then
+		GlowManager.ApplyGlow(dummy, glowName)
+	end
+
+	LeaderboardService.RotateDummy(dummy)
+end
+
+-- Validate glows for a player when they join (delegates to GlowValidator)
+function LeaderboardService.ValidateGlowsOnJoin(player: Player)
+	if not player then return end
+
+	-- Get the glow event for validation
+	local glowEvent = ReplicatedStorage:FindFirstChild("GlowEvent")
+	if not glowEvent then
+		warn("[LeaderboardService] GlowEvent not found for validation")
+		return
+	end
+
+	-- Use the GlowValidator to handle validation
+	GlowValidator.ValidateGlowsOnJoin(player, GlowManager, glowEvent)
+end
+
+-- Initialize the service
+local function initializeService()
+	print("[LeaderboardService] Initializing...")
+
+	-- Set up player join handling
+	Players.PlayerAdded:Connect(function(player)
+		task.wait(2) -- Wait for player data to load
+		LeaderboardService.ValidateGlowsOnJoin(player)
+	end)
+
+	-- Handle existing players (in case of server script reloading)
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(function()
+			task.wait(2) -- Wait for player data to load
+			LeaderboardService.ValidateGlowsOnJoin(player)
+		end)
+	end
+
+	print("[LeaderboardService] Initialization complete")
+end
+
+-- Start the service
+task.spawn(initializeService)
+
+return LeaderboardService

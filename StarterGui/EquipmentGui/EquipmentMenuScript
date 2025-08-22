@@ -1,0 +1,252 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- RemoteEvents
+local setEquippedEvent = ReplicatedStorage:WaitForChild("SetEquippedItemEvent")
+local refreshEvent = ReplicatedStorage:WaitForChild("RefreshInventoryEvent")
+local dataReadyEvent = ReplicatedStorage:WaitForChild("PlayerDataReadyEvent")
+
+-- Shop data
+local ShopItemData = require(ReplicatedStorage:WaitForChild("ShopItemData"))
+
+-- UI elements
+local player = Players.LocalPlayer
+local inventory = player:WaitForChild("Inventory")
+local gui = script.Parent
+local background = gui:WaitForChild("Background")
+local scrollingFrame = gui:WaitForChild("ScrollingFrame")
+local itemTemplate = scrollingFrame:WaitForChild("ItemTemplate")
+local tabs = gui:WaitForChild("Tabs")
+local submenuFrame = gui:WaitForChild("SubmenuFrame")
+
+-- Submenu buttons
+local glowButton = submenuFrame:WaitForChild("GlowButton")
+local cosmeticsButton = submenuFrame:WaitForChild("CosmeticsButton")
+
+-- Configuration
+local DEFAULT_CATEGORY = "OwnedPowerUps"
+local currentCategory = DEFAULT_CATEGORY
+
+-- Category mapping
+local categoryMapping = {
+	OwnedPowerUps = "PowerUp",
+	OwnedEmotes = "Emote",
+	OwnedUpgrades = "Upgrade",
+	OwnedGlows = "Glow",
+	OwnedCosmetics = "Cosmetic"
+}
+
+local equippedMapping = {
+	OwnedPowerUps = "EquippedPowerUp",
+	OwnedEmotes = "EquippedEmote",
+	OwnedUpgrades = "EquippedUpgrade",
+	OwnedGlows = "EquippedGlow",
+	OwnedCosmetics = "EquippedCosmetic"
+}
+
+-- Image preloading for better performance
+local preloadedImages = {}
+local function preloadImage(imageId)
+	if not preloadedImages[imageId] and imageId ~= "rbxassetid://0" then
+		preloadedImages[imageId] = true
+		-- Create a temporary ImageLabel to preload the image
+		local tempImage = Instance.new("ImageLabel")
+		tempImage.Image = imageId
+		tempImage.Parent = script.Parent -- Use the equipment menu as parent instead of CoreGui
+		tempImage.Size = UDim2.new(0, 1, 0, 1) -- Make it tiny
+		tempImage.Position = UDim2.new(0, -1000, 0, -1000) -- Position it off-screen
+		tempImage.Visible = false -- Hide it
+		task.defer(function()
+			tempImage:Destroy()
+		end)
+	end
+end
+
+-- Preload all equipment images
+local function preloadEquipmentImages()
+	for category, items in pairs(ShopItemData) do
+		for itemName, itemData in pairs(items) do
+			if itemData.EquipIcon then
+				preloadImage(itemData.EquipIcon)
+			elseif itemData.ShopIcon then
+				preloadImage(itemData.ShopIcon)
+			end
+		end
+	end
+end
+
+-- Utility to clear items
+local function clearItems()
+	for _, child in ipairs(scrollingFrame:GetChildren()) do
+		if child:IsA("Frame") and child.Name ~= "ItemTemplate" then
+			child:Destroy()
+		end
+	end
+end
+
+-- Update tab button states
+local function updateTabStates(activeCategory)
+	-- Reset all tab buttons
+	for _, button in ipairs(tabs:GetChildren()) do
+		if button:IsA("TextButton") then
+			button.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		end
+	end
+
+	-- Highlight active tab
+	local activeTab = nil
+	if activeCategory == "OwnedPowerUps" then
+		activeTab = tabs:FindFirstChild("Powerups")
+	elseif activeCategory == "OwnedEmotes" then
+		activeTab = tabs:FindFirstChild("Emotes")
+	elseif activeCategory == "OwnedUpgrades" then
+		activeTab = tabs:FindFirstChild("Upgrades")
+	elseif activeCategory == "OwnedGlows" or activeCategory == "OwnedCosmetics" then
+		activeTab = tabs:FindFirstChild("Style")
+	end
+
+	if activeTab then
+		activeTab.BackgroundColor3 = Color3.fromRGB(255, 255, 127)
+	end
+end
+
+-- Create an inventory item frame
+local function createItemFrame(folderName, item, equippedName)
+	local clone = itemTemplate:Clone()
+	clone.Name = item.Name
+	clone.Visible = true
+
+	local titleLabel = clone:FindFirstChild("Title")
+	if titleLabel then
+		local categoryKey = categoryMapping[folderName]
+		local itemData = categoryKey and ShopItemData[categoryKey] and ShopItemData[categoryKey][item.Name]
+		titleLabel.Text = (itemData and itemData.Name) or item.Name
+	end
+
+	local priceLabel = clone:FindFirstChild("Price")
+	if priceLabel then 
+		priceLabel.Text = "Owned" 
+		priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+	end
+
+	local iconImage = clone:FindFirstChild("Icon")
+	local categoryKey = categoryMapping[folderName]
+	local itemData = categoryKey and ShopItemData[categoryKey] and ShopItemData[categoryKey][item.Name]
+
+	if iconImage and itemData then
+		iconImage.Image = itemData.EquipIcon or itemData.ShopIcon or "rbxassetid://0"
+	end
+
+	-- Highlight equipped item
+	if equippedName == item.Name then
+		clone.BackgroundColor3 = Color3.fromRGB(255, 255, 127)
+	end
+
+	local equipButton = clone:FindFirstChild("EquipButton")
+	if equipButton and equipButton:IsA("TextButton") then
+		if folderName == "OwnedUpgrades" then
+			equipButton.Text = "Active"
+			equipButton.AutoButtonColor = false
+			equipButton.Active = false
+			equipButton.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+		else
+			local isEquipped = equippedName == item.Name
+			equipButton.Text = isEquipped and "Equipped" or "Equip"
+			equipButton.BackgroundColor3 = isEquipped and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(0, 150, 255)
+			equipButton.MouseButton1Click:Connect(function()
+				local equippedValue = inventory:FindFirstChild(equippedMapping[folderName])
+				if equippedValue then
+					equippedValue.Value = item.Name
+					setEquippedEvent:FireServer(equippedMapping[folderName], item.Name)
+				end
+				displayInventoryItems(folderName)
+			end)
+		end
+	end
+
+	clone.Parent = scrollingFrame
+end
+
+-- Display inventory for a folder
+function displayInventoryItems(folderName)
+	currentCategory = folderName
+	submenuFrame.Visible = false
+	clearItems()
+	updateTabStates(folderName)
+
+	local categoryFolder = inventory:FindFirstChild(folderName)
+	if not categoryFolder then return end
+
+	local equippedValue = inventory:FindFirstChild(equippedMapping[folderName])
+	local equippedName = equippedValue and equippedValue.Value or ""
+
+	for _, item in ipairs(categoryFolder:GetChildren()) do
+		if item:IsA("StringValue") then
+			createItemFrame(folderName, item, equippedName)
+		end
+	end
+end
+
+-- Tab handling
+local tabMapping = {
+	Powerups = "OwnedPowerUps",
+	Emotes = "OwnedEmotes",
+	Upgrades = "OwnedUpgrades",
+	Style = {
+		Glow = "OwnedGlows",
+		Cosmetics = "OwnedCosmetics"
+	}
+}
+
+for tabName, target in pairs(tabMapping) do
+	local button = tabs:FindFirstChild(tabName)
+	if button then
+		button.MouseButton1Click:Connect(function()
+			if typeof(target) == "table" then
+				-- Show submenu
+				clearItems()
+				submenuFrame.Visible = true
+				updateTabStates("Style")
+			else
+				displayInventoryItems(target)
+			end
+		end)
+	end
+end
+
+-- Submenu button logic
+glowButton.MouseButton1Click:Connect(function()
+	displayInventoryItems("OwnedGlows")
+end)
+
+cosmeticsButton.MouseButton1Click:Connect(function()
+	displayInventoryItems("OwnedCosmetics")
+end)
+
+-- Refresh when data updates
+refreshEvent.OnClientEvent:Connect(function(category)
+	for folderName, categoryKey in pairs(categoryMapping) do
+		if category == categoryKey then
+			displayInventoryItems(folderName)
+			break
+		end
+	end
+end)
+
+-- Initialize
+local function initialize()
+	-- Preload images for better performance
+	preloadEquipmentImages()
+
+	-- Set up mouse controller
+	local MenuMouseController = require(game:GetService("ReplicatedStorage"):WaitForChild("MenuMouseController"))
+	MenuMouseController.Watch(script.Parent)
+
+	-- Wait for data to be ready, then display default category
+	dataReadyEvent.OnClientEvent:Connect(function()
+		displayInventoryItems(DEFAULT_CATEGORY)
+	end)
+end
+
+-- Start initialization
+initialize()

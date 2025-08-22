@@ -1,0 +1,15 @@
+-- 📍 StarterPlayer > StarterPlayerScripts > CameraResetClient
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local camera = workspace.CurrentCamera
+local player = Players.LocalPlayer
+
+ReplicatedStorage:WaitForChild("ResetCameraEvent").OnClientEvent:Connect(function()
+	local char = player.Character or player.CharacterAdded:Wait()
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		camera.CameraType = Enum.CameraType.Custom
+		camera.CameraSubject = humanoid
+	end
+end)

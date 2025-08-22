@@ -1,0 +1,261 @@
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- RemoteEvents
+local voteEvent = ReplicatedStorage:WaitForChild("MapVoteEvent")
+local voteUpdateEvent = ReplicatedStorage:WaitForChild("VoteUpdateEvent")
+local showVotingGuiEvent = ReplicatedStorage:WaitForChild("ShowVotingGuiEvent")
+local votingCountdownEvent = ReplicatedStorage:WaitForChild("VotingCountdownEvent")
+
+-- Voting state
+local VotingService = {}
+local GameStateService = require(game.ServerScriptService.Services:WaitForChild("GameStateService"))
+
+local votes = {}
+local mapNames = {"Map_SkyRise", "Map_CrystalTower", "Map_Jungle"}
+local countdownStarted = false
+local countdownDuration = 15
+local activeCountdownValue = countdownDuration
+local startGameCallback = nil
+local mapLoadCallback = nil
+local mapLoaded = false
+
+local function broadcastVotes()
+	local tally = {}
+	for _, map in pairs(mapNames) do
+		tally[map] = 0
+	end
+	for _, vote in pairs(votes) do
+		if tally[vote] then
+			tally[vote] += 1
+		end
+	end
+	voteUpdateEvent:FireAllClients(tally)
+end
+
+-- Force reset
+function VotingService.Reset()
+	votes = {}
+	countdownStarted = false
+	activeCountdownValue = countdownDuration
+	mapLoaded = false
+
+	-- Clear all votes and update clients
+	broadcastVotes()
+
+	-- Hide voting UI for all players
+	for _, player in ipairs(Players:GetPlayers()) do
+		showVotingGuiEvent:FireClient(player, false)
+	end
+
+	print("🔄 VotingService Reset Complete")
+end
+
+-- NEW: Stop countdown and reset voting state
+function VotingService.StopCountdown()
+	if not countdownStarted then
+		print("Countdown not running, nothing to stop")
+		return
+	end
+
+	print("🛑 Stopping voting countdown...")
+	countdownStarted = false
+	activeCountdownValue = countdownDuration
+	mapLoaded = false
+
+	-- Clear all votes and update clients
+	broadcastVotes()
+
+	-- Hide voting UI for all players
+	for _, player in ipairs(Players:GetPlayers()) do
+		showVotingGuiEvent:FireClient(player, false)
+	end
+
+	-- Reset countdown started flag in GameStateService
+	local state = GameStateService.GetState()
+	state.countdownStarted = false
+
+	print("🔄 Countdown stopped and voting reset")
+end
+
+-- NEW: Check if countdown should continue based on ready players
+function VotingService.ShouldCountdownContinue()
+	local state = GameStateService.GetState()
+	local readyCount = 0
+
+	for _, _ in pairs(state.readyPlayers) do
+		readyCount += 1
+	end
+
+	return readyCount > 0
+end
+
+-- Start map loading (called when 3 seconds remain in voting)
+function VotingService.StartMapLoad(mapName)
+	if mapLoaded then
+		print("Map already loaded, skipping duplicate load")
+		return
+	end
+
+	mapLoaded = true
+	print("🗺️ Starting map load for:", mapName)
+
+	-- Call the map load callback (which will be startGameWithWinningMap)
+	if mapLoadCallback then
+		print("📞 Calling mapLoadCallback with:", mapName)
+		mapLoadCallback(mapName)
+	else
+		warn("❌ mapLoadCallback is nil!")
+	end
+end
+
+function VotingService.Init(_, mapLoadCallbackParam, gameStartCallback)
+	startGameCallback = gameStartCallback
+	mapLoadCallback = mapLoadCallbackParam
+
+	voteEvent.OnServerEvent:Connect(function(player, mapName)
+		if not table.find(mapNames, mapName) then
+			warn(player.Name .. " tried to vote for invalid map:", mapName)
+			return
+		end
+
+		-- Get current ready state directly from GameStateService
+		local state = GameStateService.GetState()
+		if not state.readyPlayers[player] then
+			warn(player.Name .. " tried to vote but is not marked ready.")
+			print("Debug - Current ready players:")
+			for p, _ in pairs(state.readyPlayers) do
+				print("  - " .. p.Name)
+			end
+
+			-- Send error feedback to client
+			local feedbackEvent = ReplicatedStorage:FindFirstChild("VoteFeedbackEvent") or Instance.new("RemoteEvent")
+			feedbackEvent.Name = "VoteFeedbackEvent"
+			feedbackEvent.Parent = ReplicatedStorage
+			feedbackEvent:FireClient(player, "You must be ready to vote!")
+
+			-- Force recheck ready state
+			local readyEvent = ReplicatedStorage:FindFirstChild("PlayerReadyEvent")
+			if readyEvent then
+				readyEvent:FireClient(player, false)
+			end
+
+			return
+		end
+
+		-- Allow players to change their vote
+		votes[player] = mapName
+		print(player.Name .. " voted for " .. mapName)
+		broadcastVotes()
+	end)
+
+	VotingService.StartCountdownToGame = function()
+		if countdownStarted then 
+			print("Countdown already started, ignoring duplicate call")
+			return 
+		end
+
+		countdownStarted = true
+		print("🎮 Starting voting countdown...")
+
+		task.spawn(function()
+			activeCountdownValue = countdownDuration
+			while activeCountdownValue > 0 do
+				local lobbyPlayers = Players:GetPlayers()
+				local totalPlayers = #lobbyPlayers
+				local votedCount = 0
+				local readyCount = 0
+
+				-- Get current ready players count from GameStateService
+				local state = GameStateService.GetState()
+				for _, _ in pairs(state.readyPlayers) do
+					readyCount += 1
+				end
+
+				for _, p in pairs(lobbyPlayers) do
+					if votes[p] then
+						votedCount += 1
+					end
+				end
+
+				-- NEW: Check if ready players have left - stop countdown if no ready players remain
+				if readyCount == 0 then
+					print("🚫 No ready players remaining - stopping countdown")
+					VotingService.StopCountdown()
+					return
+				end
+
+				-- Check if all players voted early and shorten countdown
+				if votedCount == totalPlayers and activeCountdownValue > 3 then
+					print("All players voted — shortening countdown to 3s")
+					activeCountdownValue = 3
+				end
+
+				-- Start loading the winning map when 3 seconds remain
+				if activeCountdownValue == 3 then
+					local winningMap = VotingService.DetermineWinningMap()
+					print("🎯 Starting map load for:", winningMap)
+					VotingService.StartMapLoad(winningMap)
+				end
+
+				-- Tick sound only on final 3, 2, 1
+				if activeCountdownValue >= 1 and activeCountdownValue <= 3 then
+					for _, p in pairs(lobbyPlayers) do
+						local gui = p:FindFirstChild("PlayerGui")
+						if gui then
+							-- Prevent duplicates by checking for existing sound first
+							local existing = gui:FindFirstChild("TickSound")
+							if existing then
+								existing:Destroy()
+							end
+							local tick = ReplicatedStorage:WaitForChild("TickSound"):Clone()
+							tick.Name = "TickSound" -- important for deduplication
+							tick.Parent = gui
+							tick:Play()
+							game.Debris:AddItem(tick, 2)
+						end
+					end
+				end
+				for _, p in pairs(lobbyPlayers) do
+					votingCountdownEvent:FireClient(p, activeCountdownValue)
+				end
+				activeCountdownValue -= 1
+				task.wait(1)
+			end
+			for _, p in pairs(Players:GetPlayers()) do
+				showVotingGuiEvent:FireClient(p, false)
+			end
+			print("🎮 Countdown finished! Calling startGameCallback...")
+			if startGameCallback then
+				local winningMap = VotingService.DetermineWinningMap()
+				print("🏆 Winning map determined:", winningMap)
+				startGameCallback(winningMap)
+			else
+				warn("❌ startGameCallback is nil!")
+			end
+		end)
+	end
+end
+
+function VotingService.DetermineWinningMap()
+	local results = {}
+	for _, map in pairs(mapNames) do
+		results[map] = 0
+	end
+	for _, map in pairs(votes) do
+		results[map] += 1
+	end
+
+	local winner, maxVotes = nil, 0
+	for map, count in pairs(results) do
+		if count > maxVotes then
+			winner = map
+			maxVotes = count
+		end
+	end
+
+	return winner or "Map_SkyRise"
+end
+
+return VotingService

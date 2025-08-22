@@ -1,0 +1,31 @@
+-- CheckpointDeactivationClient.lua
+-- Handles notifications when checkpoints are deactivated by the gas
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+if not player then return end
+
+-- Wait for the checkpoint deactivation event
+local checkpointDeactivatedEvent = ReplicatedStorage:WaitForChild("CheckpointDeactivatedEvent")
+
+-- Handle checkpoint deactivation
+checkpointDeactivatedEvent.OnClientEvent:Connect(function()
+	print("🚫 Your checkpoint has been deactivated by the gas!")
+
+	-- You can add visual/audio feedback here
+	-- For example:
+	-- - Play a sound effect
+	-- - Show a notification message
+	-- - Update UI elements
+	-- - Play particle effects
+
+	-- Optional: Show a brief message to the player
+	local messageEvent = ReplicatedStorage:FindFirstChild("ShowMessageEvent")
+	if messageEvent then
+		messageEvent:FireServer("Checkpoint deactivated by gas!")
+	end
+end)
+
+print("✅ Checkpoint deactivation client script loaded")

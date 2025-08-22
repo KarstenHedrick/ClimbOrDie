@@ -1,0 +1,23 @@
+local InventoryService = {}
+
+function InventoryService.SetEquippedItem(player, key, value)
+	local inventory = player:FindFirstChild("Inventory")
+	if not inventory then return end
+
+	local validKeys = {
+		EquippedPowerUp = true,
+		EquippedEmote = true,
+		EquippedUpgrade = true,
+		EquippedGlow = true,
+		EquippedCosmetic = true,
+	}
+
+	if validKeys[key] then
+		local target = inventory:FindFirstChild(key)
+		if target and target:IsA("StringValue") then
+			target.Value = value
+		end
+	end
+end
+
+return InventoryService

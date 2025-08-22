@@ -1,0 +1,152 @@
+-- Location: ServerScriptService/Services/UIService.lua
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local UIService = {}
+
+-- Cache all relevant RemoteEvents
+local Events = {
+	ShowLobbyUI = ReplicatedStorage:WaitForChild("ShowLobbyUIEvent"),
+	HideLobbyUI = ReplicatedStorage:WaitForChild("HideLobbyUIEvent"),
+	ShowShopGui = ReplicatedStorage:WaitForChild("ShowShopGuiEvent"),
+	ShowEquipmentGui = ReplicatedStorage:WaitForChild("ShowEquipmentGuiEvent"),
+	GameMessage = ReplicatedStorage:WaitForChild("GameMessageEvent"),
+	ShowGameMenus = ReplicatedStorage:WaitForChild("ShowGameMenusEvent"),
+	HideGameMenus = ReplicatedStorage:WaitForChild("HideGameMenusEvent"),
+	ShowClimbGui = ReplicatedStorage:WaitForChild("ShowClimbGuiEvent"),
+	UpdateClimbHeights = ReplicatedStorage:WaitForChild("UpdateClimbHeights"),
+	StartCountdown = ReplicatedStorage:WaitForChild("StartCountdownEvent"),
+	ShowDeathGui = ReplicatedStorage:FindFirstChild("ShowDeathGuiEvent") or Instance.new("RemoteEvent"),
+	HideEmoteGui = ReplicatedStorage:WaitForChild("HideEmoteGuiEvent"),
+	ShowEmoteGui = ReplicatedStorage:WaitForChild("ShowEmoteGuiEvent"),
+	HidePowerUpGui = ReplicatedStorage:WaitForChild("HidePowerUpGuiEvent"),
+	ShowPowerUpGui = ReplicatedStorage:WaitForChild("ShowPowerUpGuiEvent"),
+	HideGoldGui = ReplicatedStorage:WaitForChild("HideGoldGuiEvent"),
+	ShowGoldGui = ReplicatedStorage:WaitForChild("ShowGoldGuiEvent"),
+	HideWinGui = ReplicatedStorage:WaitForChild("HideWinGuiEvent"),
+	ShowWinGui = ReplicatedStorage:WaitForChild("ShowWinGuiEvent"),
+	HideUpgradesGui = ReplicatedStorage:FindFirstChild("HideUpgradesGuiEvent") or Instance.new("RemoteEvent"),
+	ShowUpgradesGui = ReplicatedStorage:FindFirstChild("ShowUpgradesGuiEvent") or Instance.new("RemoteEvent"),
+	UnlockMouse = ReplicatedStorage:WaitForChild("UnlockMouseEvent"),
+	LockMouse = ReplicatedStorage:WaitForChild("LockMouseEvent")
+}
+
+-- Set up ShowDeathGuiEvent if it doesn't exist
+if not ReplicatedStorage:FindFirstChild("ShowDeathGuiEvent") then
+	Events.ShowDeathGui.Name = "ShowDeathGuiEvent"
+	Events.ShowDeathGui.Parent = ReplicatedStorage
+	print("UIService: Created ShowDeathGuiEvent")
+end
+
+-- Set up UpgradesGui events if they don't exist
+if not ReplicatedStorage:FindFirstChild("HideUpgradesGuiEvent") then
+	Events.HideUpgradesGui.Name = "HideUpgradesGuiEvent"
+	Events.HideUpgradesGui.Parent = ReplicatedStorage
+	print("UIService: Created HideUpgradesGuiEvent")
+end
+
+if not ReplicatedStorage:FindFirstChild("ShowUpgradesGuiEvent") then
+	Events.ShowUpgradesGui.Name = "ShowUpgradesGuiEvent"
+	Events.ShowUpgradesGui.Parent = ReplicatedStorage
+	print("UIService: Created ShowUpgradesGuiEvent")
+end
+
+-- Lobby UI
+function UIService.ShowLobbyUI(player)
+	Events.ShowLobbyUI:FireClient(player)
+end
+
+function UIService.ShowLobbyUIForAll()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		UIService.ShowLobbyUI(plr)
+		Events.ShowGameMenus:FireClient(plr)
+	end
+end
+
+function UIService.HideLobbyGUIsFor(player)
+	print("UIService: Hiding lobby UI for player:", player.Name)
+	Events.HideLobbyUI:FireClient(player)
+end
+
+-- Game messages
+function UIService.SendMessageAll(message)
+	Events.GameMessage:FireAllClients(message)
+end
+
+-- Game menus
+function UIService.ShowGameMenus(player)
+	Events.ShowGameMenus:FireClient(player)
+end
+
+function UIService.HideGameMenus(player)
+	print("UIService: Hiding game menus for player:", player.Name)
+	Events.HideGameMenus:FireClient(player)
+end
+
+-- GUI Openers
+function UIService.ShowShopGui(player)
+	Events.ShowShopGui:FireClient(player)
+end
+
+function UIService.ShowEquipmentGui(player)
+	Events.ShowEquipmentGui:FireClient(player)
+end
+
+function UIService.ShowDeathGui(player)
+	print("UIService: Firing ShowDeathGuiEvent for player:", player.Name)
+	Events.ShowDeathGui:FireClient(player)
+end
+
+-- Climb GUI
+function UIService.ShowClimbGui(player, startY, finishY, gas)
+	Events.ShowClimbGui:FireClient(player)
+	Events.UpdateClimbHeights:FireClient(player, startY, finishY, gas)
+end
+
+function UIService.StartGameCountdown(player)
+	Events.StartCountdown:FireClient(player)
+end
+
+-- Spectate-related GUI hiding
+function UIService.HideSpectateRestrictedGUIsFor(player)
+	print("UIService: Hiding all restricted GUIs for player:", player.Name)
+	Events.HideLobbyUI:FireClient(player)
+	Events.HideEmoteGui:FireClient(player)
+	Events.HidePowerUpGui:FireClient(player)
+	Events.HideGameMenus:FireClient(player)
+	Events.HideGoldGui:FireClient(player)
+	Events.HideWinGui:FireClient(player)
+	Events.HideUpgradesGui:FireClient(player)
+	print("UIService: All hide events fired for player:", player.Name)
+end
+
+function UIService.ShowSpectateRestrictedGUIsFor(player)
+	Events.ShowLobbyUI:FireClient(player)
+	Events.ShowEmoteGui:FireClient(player)
+	Events.ShowPowerUpGui:FireClient(player)
+	Events.ShowGameMenus:FireClient(player)
+	Events.ShowGoldGui:FireClient(player)
+	Events.ShowWinGui:FireClient(player)
+	Events.ShowUpgradesGui:FireClient(player)
+
+	-- Also send current countdown state if there's an active countdown
+	local GameStateService = require(script.Parent:WaitForChild("GameStateService"))
+	local context = GameStateService.GetContext()
+	local gasStartTime = context.gasStartTime or GameStateService.GetGasStartTime()
+
+	if gasStartTime then
+		local currentTime = GameStateService.GetCurrentTime()
+		local remainingSeconds = math.max(0, gasStartTime - currentTime)
+
+		if remainingSeconds > 0 then
+			print("Sending remaining countdown to player who stopped spectating:", player.Name, "Remaining:", remainingSeconds)
+			local countdownEvent = ReplicatedStorage:FindFirstChild("GasCountdownBroadcastEvent")
+			if countdownEvent then
+				countdownEvent:FireClient(player, remainingSeconds)
+			end
+		end
+	end
+end
+
+return UIService

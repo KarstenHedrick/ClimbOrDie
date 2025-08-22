@@ -1,0 +1,229 @@
+-- MusicService.lua
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
+
+local MusicService = {}
+
+-- RemoteEvents for music control
+local musicEvents = {
+	PlayLobbyMusic = ReplicatedStorage:FindFirstChild("PlayLobbyMusicEvent") or Instance.new("RemoteEvent"),
+	StopLobbyMusic = ReplicatedStorage:FindFirstChild("StopLobbyMusicEvent") or Instance.new("RemoteEvent"),
+	PlayGameMusic = ReplicatedStorage:FindFirstChild("PlayGameMusicEvent") or Instance.new("RemoteEvent"),
+	StopGameMusic = ReplicatedStorage:FindFirstChild("StopGameMusicEvent") or Instance.new("RemoteEvent")
+}
+
+-- Set up events if they don't exist
+for name, event in pairs(musicEvents) do
+	if not ReplicatedStorage:FindFirstChild(name .. "Event") then
+		event.Name = name .. "Event"
+		event.Parent = ReplicatedStorage
+		print("MusicService: Created " .. name .. "Event")
+	end
+end
+
+-- Music configuration
+local musicConfig = {}
+
+-- Load music configuration
+local function loadMusicConfig()
+	print("🎵 Attempting to load MusicConfig...")
+
+	local success, config = pcall(function()
+		local musicConfigModule = ReplicatedStorage:WaitForChild("MusicConfig")
+		print("🎵 Found MusicConfig module:", musicConfigModule.Name)
+		return require(musicConfigModule)
+	end)
+
+	if success and config then
+		musicConfig = config
+		print("🎵 Loaded custom music configuration")
+		print("🎵 Lobby music ID:", musicConfig.lobbyMusic.soundId)
+		print("🎵 Game music ID:", musicConfig.gameMusic.soundId)
+	else
+		print("🎵 Failed to load MusicConfig, error:", config)
+		-- Fallback to default configuration
+		musicConfig = {
+			lobbyMusic = {
+				soundId = "rbxasset://sounds/electronicpingshort.wav",
+				volume = 0.5,
+				looped = true,
+				playbackSpeed = 1
+			},
+			gameMusic = {
+				soundId = "rbxasset://sounds/electronicpingshort.wav",
+				volume = 0.3,
+				looped = true,
+				playbackSpeed = 1
+			}
+		}
+		print("🎵 Using default music configuration")
+	end
+end
+
+-- Track current music state
+local currentMusicState = {
+	lobbyMusicPlaying = false,
+	gameMusicPlaying = false
+}
+
+-- Initialize the music service
+function MusicService.Init()
+	print("🎵 MusicService initialized")
+
+	-- Load music configuration
+	loadMusicConfig()
+
+	-- Set up player joining/leaving handlers
+	Players.PlayerAdded:Connect(function(player)
+		-- If lobby music is currently playing, start it for the new player
+		if currentMusicState.lobbyMusicPlaying then
+			MusicService.PlayLobbyMusicForPlayer(player)
+		end
+	end)
+
+	Players.PlayerRemoving:Connect(function(player)
+		-- Clean up any player-specific music when they leave
+		MusicService.StopAllMusicForPlayer(player)
+	end)
+end
+
+-- Play lobby music for all players
+function MusicService.PlayLobbyMusic()
+	if currentMusicState.lobbyMusicPlaying then
+		print("🎵 Lobby music is already playing")
+		return
+	end
+
+	currentMusicState.lobbyMusicPlaying = true
+	currentMusicState.gameMusicPlaying = false
+
+	-- Stop any game music first
+	MusicService.StopGameMusic()
+
+	-- Play lobby music for all players
+	for _, player in pairs(Players:GetPlayers()) do
+		MusicService.PlayLobbyMusicForPlayer(player)
+	end
+
+	print("🎵 Started lobby music for all players")
+end
+
+-- Play lobby music for a specific player
+function MusicService.PlayLobbyMusicForPlayer(player)
+	if not player or not player.Parent then return end
+
+	musicEvents.PlayLobbyMusic:FireClient(player, musicConfig.lobbyMusic)
+	print("🎵 Started lobby music for player:", player.Name)
+end
+
+-- Stop lobby music for all players
+function MusicService.StopLobbyMusic()
+	if not currentMusicState.lobbyMusicPlaying then
+		print("🎵 Lobby music is not playing")
+		return
+	end
+
+	currentMusicState.lobbyMusicPlaying = false
+
+	for _, player in pairs(Players:GetPlayers()) do
+		MusicService.StopLobbyMusicForPlayer(player)
+	end
+
+	print("🎵 Stopped lobby music for all players")
+end
+
+-- Stop lobby music for a specific player
+function MusicService.StopLobbyMusicForPlayer(player)
+	if not player or not player.Parent then return end
+
+	musicEvents.StopLobbyMusic:FireClient(player)
+	print("🎵 Stopped lobby music for player:", player.Name)
+end
+
+-- Play game music for all players
+function MusicService.PlayGameMusic()
+	if currentMusicState.gameMusicPlaying then
+		print("🎵 Game music is already playing")
+		return
+	end
+
+	currentMusicState.gameMusicPlaying = true
+	currentMusicState.lobbyMusicPlaying = false
+
+	-- Stop any lobby music first
+	MusicService.StopLobbyMusic()
+
+	-- Play game music for all players
+	for _, player in pairs(Players:GetPlayers()) do
+		MusicService.PlayGameMusicForPlayer(player)
+	end
+
+	print("🎵 Started game music for all players")
+end
+
+-- Play game music for a specific player
+function MusicService.PlayGameMusicForPlayer(player)
+	if not player or not player.Parent then return end
+
+	musicEvents.PlayGameMusic:FireClient(player, musicConfig.gameMusic)
+	print("🎵 Started game music for player:", player.Name)
+end
+
+-- Stop game music for all players
+function MusicService.StopGameMusic()
+	if not currentMusicState.gameMusicPlaying then
+		print("🎵 Game music is not playing")
+		return
+	end
+
+	currentMusicState.gameMusicPlaying = false
+
+	for _, player in pairs(Players:GetPlayers()) do
+		MusicService.StopGameMusicForPlayer(player)
+	end
+
+	print("🎵 Stopped game music for all players")
+end
+
+-- Stop game music for a specific player
+function MusicService.StopGameMusicForPlayer(player)
+	if not player or not player.Parent then return end
+
+	musicEvents.StopGameMusic:FireClient(player)
+	print("🎵 Stopped game music for player:", player.Name)
+end
+
+-- Stop all music for a specific player
+function MusicService.StopAllMusicForPlayer(player)
+	if not player or not player.Parent then return end
+
+	musicEvents.StopLobbyMusic:FireClient(player)
+	musicEvents.StopGameMusic:FireClient(player)
+	print("🎵 Stopped all music for player:", player.Name)
+end
+
+-- Update music configuration
+function MusicService.UpdateMusicConfig(newConfig)
+	if newConfig.lobbyMusic then
+		musicConfig.lobbyMusic = newConfig.lobbyMusic
+	end
+	if newConfig.gameMusic then
+		musicConfig.gameMusic = newConfig.gameMusic
+	end
+	print("🎵 Updated music configuration")
+end
+
+-- Get current music state
+function MusicService.GetMusicState()
+	return currentMusicState
+end
+
+-- Reset music state (useful for game resets)
+function MusicService.Reset()
+	currentMusicState.lobbyMusicPlaying = false
+	currentMusicState.gameMusicPlaying = false
+	print("🎵 Music state reset")
+end
+
+return MusicService 

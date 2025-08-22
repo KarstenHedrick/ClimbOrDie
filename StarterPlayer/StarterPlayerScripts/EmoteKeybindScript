@@ -1,0 +1,33 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local emoteGui = playerGui:WaitForChild("EmoteGui")
+local frame = emoteGui:WaitForChild("Frame")
+local emoteButton = frame:WaitForChild("Emote")
+
+local inventory = player:WaitForChild("Inventory")
+local equippedEmote = inventory:WaitForChild("EquippedEmote")
+local playEmoteEvent = ReplicatedStorage:WaitForChild("PlayEmoteEvent")
+
+local function playEquippedEmote()
+	local emoteName = equippedEmote.Value
+	if emoteName and emoteName ~= "" then
+		playEmoteEvent:FireServer(emoteName)
+	end
+end
+
+-- Trigger with "E" key
+UserInputService.InputBegan:Connect(function(input, isTyping)
+	if isTyping then return end
+	if input.KeyCode == Enum.KeyCode.E then
+		playEquippedEmote()
+	end
+end)
+
+-- Trigger by clicking or tapping GUI button
+emoteButton.Activated:Connect(function()
+	playEquippedEmote()
+end)

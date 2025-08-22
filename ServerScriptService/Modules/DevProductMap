@@ -1,0 +1,16 @@
+-- 📍 Location: ServerScriptService > DevProductMap
+
+-- Maps item names to their corresponding Developer Product IDs
+-- These IDs must be created in the Roblox Creator Dashboard under Monetization > Developer Products
+
+local DevProductMap = {
+	["Double Coins"] = 3337995017,  
+	["Second Chance"] = 3337994375,
+	["Donate 50 Robux"] = 3345041560,
+	["ShadowGlow"] = 3345041561, -- Add your actual Developer Product ID here
+	["BubblesGlow"] = 3357840633, -- Add your actual Developer Product ID here
+	["HeartsGlow"] = 3357835544, -- Add your actual Developer Product ID here
+	["GhostsGlow"] = 3357827678 -- Add your actual Developer Product ID here
+}
+
+return DevProductMap

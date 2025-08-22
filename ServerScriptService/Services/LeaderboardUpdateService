@@ -1,0 +1,286 @@
+local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LeaderboardService = require(script.Parent:WaitForChild("LeaderboardService"))
+local GlowManager = require(game.ServerScriptService.Modules:WaitForChild("GlowManager"))
+local GlowValidator = require(game.ServerScriptService.Modules:WaitForChild("GlowValidator"))
+local WeekKeyUtil = require(game.ServerScriptService.Modules:WaitForChild("WeekKeyUtil"))
+
+local LeaderboardUpdateService = {}
+
+local updateInterval = 60 -- Update every minute
+local maxEntries = 10
+
+-- Configurations for each leaderboard
+local leaderboards = {
+	{
+		key = "GlobalBestTime_Map_SkyRise",
+		desc = "Skyrise All-Time",
+		descending = true,
+		glow = "SkyriseGlow",
+		dummyFolder = "AllTimeSkyriseDummy",
+		guiPart = workspace:WaitForChild("SkyriseTimeLeaderboard"),
+		format = function(rank, name, ms)
+			return string.format("%d. %s - %s", rank, name, LeaderboardService.FormatMilliseconds(ms))
+		end
+	},
+	{
+		key = "WeeklyBestTime_Map_SkyRise_" .. WeekKeyUtil.GetCurrentWeekKey(),
+		desc = "Skyrise Weekly",
+		descending = true,
+		glow = "WeeklySkyriseGlow",
+		dummyFolder = "WeeklySkyriseDummy",
+		guiPart = workspace:WaitForChild("WeeklySkyriseLeaderboard"),
+		format = function(rank, name, ms)
+			return string.format("%d. %s - %s", rank, name, LeaderboardService.FormatMilliseconds(ms))
+		end
+	},
+	{
+		key = "GlobalBestTime_Map_Jungle",
+		desc = "Jungle All-Time",
+		descending = true,
+		glow = "JungleGlow",
+		dummyFolder = "AllTimeJungleDummy",
+		guiPart = workspace:WaitForChild("JungleTimeLeaderboard"),
+		format = function(rank, name, ms)
+			return string.format("%d. %s - %s", rank, name, LeaderboardService.FormatMilliseconds(ms))
+		end
+	},
+	{
+		key = "WeeklyBestTime_Map_Jungle_" .. WeekKeyUtil.GetCurrentWeekKey(),
+		desc = "Jungle Weekly",
+		descending = true,
+		glow = "WeeklyJungleGlow",
+		dummyFolder = "WeeklyJungleDummy",
+		guiPart = workspace:WaitForChild("WeeklyJungleLeaderboard"),
+		format = function(rank, name, ms)
+			return string.format("%d. %s - %s", rank, name, LeaderboardService.FormatMilliseconds(ms))
+		end
+	},
+	{
+		key = "GlobalWinsLeaderboard",
+		desc = "Total Wins",
+		descending = false,
+		glow = "WinsGlow",
+		dummyFolder = "TotalWinsDummy",
+		guiPart = workspace:WaitForChild("TotalWinsLeaderboard"),
+		format = function(rank, name, wins)
+			return string.format("%d. %s - %d Wins", rank, name, wins)
+		end
+	},
+	{
+		key = "GlobalDonationLeaderboard",
+		desc = "Top Donators",
+		descending = false,
+		glow = "DonatorGlow",
+		dummyFolder = "TopDonatorDummy",
+		guiPart = workspace:WaitForChild("TotalDonatedLeaderboard"),
+		format = function(rank, name, donated)
+			return string.format("%d. %s - %d Robux", rank, name, donated)
+		end
+	}
+}
+
+-- Track last top users to prevent unnecessary updates
+local lastTopUserIds = {}
+
+local function fetchTopPlayers(leaderboardKey: string, descending: boolean, count: number): {number}?
+	local success, pages = pcall(function()
+		return DataStoreService:GetOrderedDataStore(leaderboardKey):GetSortedAsync(descending, count)
+	end)
+
+	if not success or not pages then
+		warn("[LeaderboardUpdateService] Failed to retrieve leaderboard:", leaderboardKey)
+		return nil
+	end
+
+	local topPlayers = pages:GetCurrentPage()
+	local topUserIds = {}
+
+	for i = 1, math.min(count, #topPlayers) do
+		local userId = tonumber(topPlayers[i].key)
+		if userId then
+			table.insert(topUserIds, userId)
+		end
+	end
+
+	return topUserIds, topPlayers
+end
+
+local function updateLeaderboard(config)
+	local topUserIds, topPlayers = fetchTopPlayers(config.key, config.descending, maxEntries)
+	if not topUserIds then
+		return
+	end
+
+	-- Get top 3 players for glow management
+	local top3UserIds = {}
+	for i = 1, math.min(3, #topUserIds) do
+		table.insert(top3UserIds, topUserIds[i])
+	end
+
+	-- Handle glow management
+	local newTopUserId = top3UserIds[1]
+	local previousTopId = lastTopUserIds[config.key]
+
+	-- Special handling for DonatorGlow - only manage dummy, not individual glows
+	if config.glow == "DonatorGlow" then
+		if newTopUserId then
+			-- If we have a new leader
+			if previousTopId ~= newTopUserId then
+				print("[LeaderboardUpdate] New top donor for", config.desc, ":", newTopUserId)
+
+				-- Update dummy display
+				LeaderboardService.SpawnLeaderboardDummy(config.dummyFolder, newTopUserId, config.glow)
+				lastTopUserIds[config.key] = newTopUserId
+			end
+		else
+			-- No leader exists
+			if previousTopId then
+				print("[LeaderboardUpdate] No current top donor")
+				lastTopUserIds[config.key] = nil
+			end
+
+			LeaderboardService.SpawnLeaderboardDummy(config.dummyFolder, nil, config.glow)
+		end
+	else
+		-- Regular glow management for other leaderboards
+		if newTopUserId then
+			-- If we have a new leader
+			if previousTopId ~= newTopUserId then
+				print("[LeaderboardUpdate] New leader for", config.desc, ":", newTopUserId)
+
+				-- Remove glow from previous leader if they're no longer in top 3
+				if previousTopId and not table.find(top3UserIds, previousTopId) then
+					print("[LeaderboardUpdate] Removing glow from previous leader:", previousTopId)
+					GlowManager.FullyRemoveGlow(previousTopId, config.glow, false)
+				end
+
+				-- Grant glow to new leader if they don't already have it
+				if not GlowManager.PlayerHasGlow(newTopUserId, config.glow) then
+					print("[LeaderboardUpdate] Granting glow to new leader:", newTopUserId)
+					GlowManager.GrantGlow(newTopUserId, config.glow)
+				end
+
+				-- Update dummy display
+				LeaderboardService.SpawnLeaderboardDummy(config.dummyFolder, newTopUserId, config.glow)
+				lastTopUserIds[config.key] = newTopUserId
+			else
+				-- Same leader, ensure they have the glow
+				if not GlowManager.PlayerHasGlow(newTopUserId, config.glow) then
+					print("[LeaderboardUpdate] Verifying glow for existing leader:", newTopUserId)
+					GlowManager.GrantGlow(newTopUserId, config.glow)
+				end
+			end
+		else
+			-- No leader exists
+			if previousTopId then
+				print("[LeaderboardUpdate] Removing glow - no current leader")
+				GlowManager.FullyRemoveGlow(previousTopId, config.glow, false)
+				lastTopUserIds[config.key] = nil
+			end
+
+			LeaderboardService.SpawnLeaderboardDummy(config.dummyFolder, nil, config.glow)
+		end
+	end
+
+	-- Update GlowManager's top players list for validation
+	GlowManager.UpdateTopPlayers(config.glow, top3UserIds)
+
+	-- Update UI
+	local labels = LeaderboardService.GetLabelReferences(config.guiPart:WaitForChild("SurfaceGui"))
+	LeaderboardService.UpdateLeaderboardUI(topPlayers, labels, config.format)
+end
+
+-- Initialize leaderboards on startup
+local function initializeLeaderboards()
+	print("[LeaderboardUpdateService] Initializing leaderboards...")
+
+	for _, config in ipairs(leaderboards) do
+		local topUserIds = fetchTopPlayers(config.key, config.descending, 3)
+		if topUserIds and #topUserIds > 0 then
+			-- Set initial top user
+			lastTopUserIds[config.key] = topUserIds[1]
+
+			-- Special handling for DonatorGlow - don't grant glow to top player during init
+			if config.glow == "DonatorGlow" then
+				print("[LeaderboardUpdateService] Initializing top donor for", config.desc, ":", topUserIds[1])
+			else
+				-- Grant glow to current top player for other leaderboards
+				local topUserId = topUserIds[1]
+				if not GlowManager.PlayerHasGlow(topUserId, config.glow) then
+					print("[LeaderboardUpdateService] Initializing glow for", config.desc, "leader:", topUserId)
+					GlowManager.GrantGlow(topUserId, config.glow)
+				end
+			end
+
+			-- Update GlowManager's top players list
+			GlowManager.UpdateTopPlayers(config.glow, topUserIds)
+
+			-- Spawn dummy
+			LeaderboardService.SpawnLeaderboardDummy(config.dummyFolder, topUserIds[1], config.glow)
+		end
+
+		-- Small delay between initializations
+		task.wait(1)
+	end
+
+	print("[LeaderboardUpdateService] Leaderboard initialization complete")
+end
+
+-- Master update loop
+local function startUpdateLoop()
+	print("[LeaderboardUpdateService] Starting update loop...")
+
+	while true do
+		for _, lb in ipairs(leaderboards) do
+			updateLeaderboard(lb)
+			task.wait(2) -- Small delay between leaderboard updates
+		end
+		task.wait(updateInterval)
+	end
+end
+
+-- Force refresh function for immediate updates
+function LeaderboardUpdateService.ForceRefresh()
+	print("[LeaderboardUpdateService] Force refreshing all leaderboards...")
+
+	for _, lb in ipairs(leaderboards) do
+		updateLeaderboard(lb)
+		task.wait(1) -- Small delay between leaderboard updates
+	end
+
+	print("[LeaderboardUpdateService] Force refresh complete")
+end
+
+-- Listen for force refresh events
+local function setupForceRefreshListener()
+	local refreshEvent = ReplicatedStorage:FindFirstChild("ForceLeaderboardRefreshEvent")
+	if not refreshEvent then
+		refreshEvent = Instance.new("RemoteEvent")
+		refreshEvent.Name = "ForceLeaderboardRefreshEvent"
+		refreshEvent.Parent = ReplicatedStorage
+	end
+
+	refreshEvent.OnServerEvent:Connect(function()
+		print("[LeaderboardUpdateService] Force refresh triggered via event")
+		LeaderboardUpdateService.ForceRefresh()
+	end)
+end
+
+-- Start the service
+task.spawn(function()
+	-- Wait a bit for everything to load
+	task.wait(5)
+
+	-- Set up force refresh listener
+	setupForceRefreshListener()
+
+	-- Initialize leaderboards
+	initializeLeaderboards()
+
+	-- Start the update loop
+	startUpdateLoop()
+end)
+
+return LeaderboardUpdateService

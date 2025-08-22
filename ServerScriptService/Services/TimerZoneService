@@ -1,0 +1,189 @@
+-- Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- RemoteEvents
+local startTimerEvent = ReplicatedStorage:FindFirstChild("StartPlayerTimerEvent")
+local resetTimerEvent = ReplicatedStorage:FindFirstChild("ResetPlayerTimerEvent")
+local resumeTimerEvent = ReplicatedStorage:FindFirstChild("ResumePlayerTimerEvent")
+
+-- Create events if they don't exist
+if not startTimerEvent then
+	startTimerEvent = Instance.new("RemoteEvent")
+	startTimerEvent.Name = "StartPlayerTimerEvent"
+	startTimerEvent.Parent = ReplicatedStorage
+end
+
+if not resetTimerEvent then
+	resetTimerEvent = Instance.new("RemoteEvent")
+	resetTimerEvent.Name = "ResetPlayerTimerEvent"
+	resetTimerEvent.Parent = ReplicatedStorage
+end
+
+if not resumeTimerEvent then
+	resumeTimerEvent = Instance.new("RemoteEvent")
+	resumeTimerEvent.Name = "ResumePlayerTimerEvent"
+	resumeTimerEvent.Parent = ReplicatedStorage
+end
+
+local TimerZoneService = {}
+
+-- Track player timer states
+local playerTimerStates = {} -- [player] = { inZone = true/false, timerStarted = true/false, hasLeftZoneOnce = true/false }
+
+-- Initialize timer state for a player
+function TimerZoneService.InitPlayer(player)
+	playerTimerStates[player] = {
+		inZone = true,
+		timerStarted = false,
+		hasLeftZoneOnce = false
+	}
+	print("TimerZoneService: Initialized timer state for", player.Name)
+end
+
+-- Clean up timer state when player leaves
+function TimerZoneService.CleanupPlayer(player)
+	playerTimerStates[player] = nil
+end
+
+-- Handle player entering the TimerStartZone
+function TimerZoneService.OnPlayerEnterZone(player)
+	if not playerTimerStates[player] then
+		TimerZoneService.InitPlayer(player)
+	end
+
+	local state = playerTimerStates[player]
+
+	-- If player was outside the zone and timer was running, reset it
+	if not state.inZone and state.timerStarted then
+		print("TimerZoneService:", player.Name, "re-entered zone - resetting timer")
+		resetTimerEvent:FireClient(player)
+		state.timerStarted = false
+	end
+
+	state.inZone = true
+end
+
+-- Handle player leaving the TimerStartZone
+function TimerZoneService.OnPlayerLeaveZone(player)
+	if not playerTimerStates[player] then
+		TimerZoneService.InitPlayer(player)
+	end
+
+	local state = playerTimerStates[player]
+
+	-- If player was in zone and timer hasn't started yet, start it
+	if state.inZone and not state.timerStarted then
+		if not state.hasLeftZoneOnce then
+			-- First time leaving zone - start timer
+			print("TimerZoneService:", player.Name, "left zone for first time - starting timer")
+			startTimerEvent:FireClient(player)
+			state.hasLeftZoneOnce = true
+		else
+			-- Has left zone before - resume timer
+			print("TimerZoneService:", player.Name, "left zone again - resuming timer")
+			resumeTimerEvent:FireClient(player)
+		end
+		state.timerStarted = true
+	end
+
+	state.inZone = false
+end
+
+-- Check if a player's timer is currently running
+function TimerZoneService.IsPlayerTimerRunning(player)
+	local state = playerTimerStates[player]
+	return state and state.timerStarted and not state.inZone
+end
+
+-- Get player's current timer state
+function TimerZoneService.GetPlayerState(player)
+	return playerTimerStates[player]
+end
+
+-- Setup TimerStartZone detection for a map
+function TimerZoneService.SetupZoneDetection(map)
+	if not map then return end
+
+	local timerZone = map:FindFirstChild("TimerStartZone", true)
+	if not timerZone then
+		warn("TimerStartZone not found in map:", map.Name)
+		return
+	end
+
+	print("TimerZoneService: Setting up zone detection for", map.Name)
+
+	-- Track which players are currently in the zone
+	local playersInZone = {}
+
+	-- Handle player entering zone
+	local function onPlayerEnterZone(player)
+		playersInZone[player] = true
+		TimerZoneService.OnPlayerEnterZone(player)
+	end
+
+	-- Handle player leaving zone
+	local function onPlayerLeaveZone(player)
+		playersInZone[player] = nil
+		TimerZoneService.OnPlayerLeaveZone(player)
+	end
+
+	-- Connect to zone touch events
+	local enterConnection
+	local leaveConnection
+
+	enterConnection = timerZone.Touched:Connect(function(hit)
+		local player = Players:GetPlayerFromCharacter(hit.Parent)
+		if player and not playersInZone[player] then
+			onPlayerEnterZone(player)
+		end
+	end)
+
+	leaveConnection = timerZone.TouchEnded:Connect(function(hit)
+		local player = Players:GetPlayerFromCharacter(hit.Parent)
+		if player and playersInZone[player] then
+			onPlayerLeaveZone(player)
+		end
+	end)
+
+	-- Store connections for cleanup
+	TimerZoneService.currentConnections = {
+		enter = enterConnection,
+		leave = leaveConnection
+	}
+
+	-- Initialize all current players
+	for _, player in pairs(Players:GetPlayers()) do
+		TimerZoneService.InitPlayer(player)
+	end
+end
+
+-- Clean up zone detection
+function TimerZoneService.CleanupZoneDetection()
+	if TimerZoneService.currentConnections then
+		if TimerZoneService.currentConnections.enter then
+			TimerZoneService.currentConnections.enter:Disconnect()
+		end
+		if TimerZoneService.currentConnections.leave then
+			TimerZoneService.currentConnections.leave:Disconnect()
+		end
+		TimerZoneService.currentConnections = nil
+	end
+
+	-- Clean up all player states
+	for player, _ in pairs(playerTimerStates) do
+		TimerZoneService.CleanupPlayer(player)
+	end
+end
+
+-- Handle player joining
+Players.PlayerAdded:Connect(function(player)
+	TimerZoneService.InitPlayer(player)
+end)
+
+-- Handle player leaving
+Players.PlayerRemoving:Connect(function(player)
+	TimerZoneService.CleanupPlayer(player)
+end)
+
+return TimerZoneService 
